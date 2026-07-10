@@ -1,0 +1,49 @@
+# Single source of truth for the research pipeline.
+# Cross-field invariants (e.g. cv.purge_bars >= labels.horizon_bars) are
+# validated in src/tml/config.py — edit with that in mind.
+
+[data]
+exchange = "binance"          # fallback if geo-blocked: "bybit"
+timeframe = "1h"
+since = "2020-01-01T00:00:00Z"
+pairs = [
+    "BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
+    "SOL/USDT", "DOGE/USDT", "LTC/USDT", "LINK/USDT", "DOT/USDT",
+]
+
+[features]
+ret_horizons = [1, 3, 6, 12, 24, 72]
+vol_spans = [24, 72, 168]
+rsi_period = 14
+atr_period = 14
+donchian_window = 168
+volume_z_window = 168
+cs_rank_cols = ["mom_24", "mom_72", "vol_ewm_24"]
+
+[labels]
+kind = "fixed_horizon_volscaled"   # "triple_barrier" reserved for M2
+horizon_bars = 24
+vol_span = 72
+
+[cv]
+train_min_bars = 17520             # ~2 years of 1h bars
+test_span_bars = 2160              # ~90 days
+step_bars = 2160
+purge_bars = 24                    # must be >= labels.horizon_bars
+embargo_bars = 24
+
+[model.lgbm]
+seed = 42
+num_leaves = 31
+learning_rate = 0.05
+n_estimators = 400
+min_data_in_leaf = 200
+feature_fraction = 0.8
+num_threads = 8
+
+[backtest]
+threshold = 0.0                    # long when score > threshold
+taker_fee_bps = 10.0               # Binance spot default
+slippage_bps = 3.0
+execution_delay_bars = 0           # set 1 for conservative next-bar-fill run
+initial_cash_usdt = 100000.0
