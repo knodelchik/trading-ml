@@ -13,6 +13,7 @@ pairs = [
 
 [features]
 ret_horizons = [1, 3, 6, 12, 24, 72]
+mom_horizons = [24, 72]
 vol_spans = [24, 72, 168]
 rsi_period = 14
 atr_period = 14
