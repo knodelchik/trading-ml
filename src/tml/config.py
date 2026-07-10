@@ -117,11 +117,18 @@ class ModelConfig(_Frozen):
 
 
 class BacktestConfig(_Frozen):
-    threshold: float
+    enter_threshold: float
+    exit_threshold: float
     taker_fee_bps: float
     slippage_bps: float
     execution_delay_bars: int
     initial_cash_usdt: float
+
+    @model_validator(mode="after")
+    def _hysteresis(self) -> BacktestConfig:
+        if self.enter_threshold < self.exit_threshold:
+            raise ValueError("enter_threshold must be >= exit_threshold (hysteresis band)")
+        return self
 
 
 class Config(_Frozen):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import polars as pl
 
@@ -85,8 +86,8 @@ def check_pair(cfg: Config, pair: str) -> PairQuality:
     return PairQuality(
         pair=store.pair_key(pair),
         rows=df.height,
-        ts_min=ts.min().isoformat(),
-        ts_max=ts.max().isoformat(),
+        ts_min=cast(datetime, ts.min()).isoformat(),
+        ts_max=cast(datetime, ts.max()).isoformat(),
         duplicate_ts=dup,
         non_monotonic=non_mono,
         non_positive_prices=non_pos,

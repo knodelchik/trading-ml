@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import UTC, datetime
+from typing import cast
 
 import matplotlib
 
@@ -51,8 +52,8 @@ def compute_cv_metrics(cfg: Config) -> dict:
             {
                 "fold_id": int(fold_id),
                 "n": fold_df.height,
-                "ts_start": fold_df["ts"].min().isoformat(),
-                "ts_end": fold_df["ts"].max().isoformat(),
+                "ts_start": cast(datetime, fold_df["ts"].min()).isoformat(),
+                "ts_end": cast(datetime, fold_df["ts"].max()).isoformat(),
                 "ic": metrics.spearman_ic(s, y),
                 "hit_rate": metrics.hit_rate(s, y),
                 "decile_spread": metrics.decile_spread(s, y),

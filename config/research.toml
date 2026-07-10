@@ -43,7 +43,11 @@ feature_fraction = 0.8
 num_threads = 8
 
 [backtest]
-threshold = 0.0                    # long when score > threshold
+# hysteresis: enter only when predicted vol-scaled 24h return clears half a
+# vol unit (expected edge must exceed round-trip cost), exit when it turns
+# negative; positions trade only on state transitions, not every bar
+enter_threshold = 0.5
+exit_threshold = 0.0
 taker_fee_bps = 10.0               # Binance spot default
 slippage_bps = 3.0
 execution_delay_bars = 0           # set 1 for conservative next-bar-fill run

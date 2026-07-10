@@ -84,7 +84,8 @@ def make_config(root, pairs: tuple[str, ...] = PAIRS) -> Config:
                 }
             },
             "backtest": {
-                "threshold": 0.0,
+                "enter_threshold": 0.0,
+                "exit_threshold": 0.0,
                 "taker_fee_bps": 10.0,
                 "slippage_bps": 3.0,
                 "execution_delay_bars": 0,
