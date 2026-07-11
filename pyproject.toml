@@ -20,9 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 # M2 only — not installed in Milestone 1
 ensemble = ["catboost>=1.2.10", "tabpfn>=8", "torch>=2.13", "optuna>=4.9"]
-live = [
-    "pybit>=5",
-]
+# live needs catboost (persisted ensemble member) but NOT torch/tabpfn
+live = ["pybit>=5", "catboost>=1.2.10"]
 
 [project.scripts]
 tml = "tml.cli:main"

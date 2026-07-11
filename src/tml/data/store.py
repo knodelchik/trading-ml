@@ -89,10 +89,12 @@ def write_raw_year(cfg: Config, pair: str, year: int, df: pl.DataFrame) -> None:
 
 def scan_raw(cfg: Config, pair: str | None = None) -> pl.LazyFrame:
     """Lazy scan of raw bars for one pair or all pairs."""
+    # exact filename, not *.parquet: macOS tar transfers can drop AppleDouble
+    # junk ("._part.parquet") next to real files, and a wildcard would eat it
     if pair is not None:
-        pattern = raw_pair_dir(cfg, pair) / "**" / "*.parquet"
+        pattern = raw_pair_dir(cfg, pair) / "**" / "part.parquet"
     else:
-        pattern = cfg.artifacts / "data" / "raw" / f"exchange={cfg.data.exchange}" / "**" / "*.parquet"
+        pattern = cfg.artifacts / "data" / "raw" / f"exchange={cfg.data.exchange}" / "**" / "part.parquet"
     return pl.scan_parquet(str(pattern)).sort("ts")
 
 
