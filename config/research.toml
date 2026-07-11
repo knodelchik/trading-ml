@@ -36,6 +36,9 @@ purge_bars = 24                    # must be >= labels.horizon_bars
 embargo_bars = 24
 
 [model]
+# NOTE: TabPFN weights are licensed NON-COMMERCIAL — fine for research and
+# paper trading; must be dropped (or commercially licensed) before any
+# real-money use. LightGBM/CatBoost carry no such restriction.
 members = ["lgbm", "catboost", "tabpfn"]
 
 [model.lgbm]
@@ -57,9 +60,10 @@ thread_count = 8
 
 [model.tabpfn]
 seed = 42
-max_train_rows = 10000        # TabPFN in-context limit: most recent rows per fold
+max_train_rows = 10000        # recency window per fold (in-context learner)
 predict_chunk = 2000
-device = "auto"
+device = "auto"               # resolves to MPS on this machine
+n_estimators = 4              # 4 = good speed/quality point on M5 (~220s/fold)
 
 [optuna]
 n_trials = 40

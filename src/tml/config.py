@@ -134,6 +134,7 @@ class TabPFNConfig(_Frozen):
     max_train_rows: int = 10_000
     predict_chunk: int = 2_000
     device: str = "auto"
+    n_estimators: int = 4  # internal forward passes; cost is linear (8 = default quality, ~2x slower)
 
 
 KNOWN_MEMBERS = ("lgbm", "catboost", "tabpfn")

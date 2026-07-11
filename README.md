@@ -55,5 +55,27 @@ Interpretation: directional timing added value over market beta net of
 costs and survives one bar of execution latency, but the evidence rests on
 one signal family over one 4.4-year window and does not robustly clear the
 deflated significance bar — promising, NOT proven, and NOT a green light
-for real money. Next: M2 (ensembles, better features, funding data), then
-Bybit demo paper trading via the nautilus live node.
+for real money.
+
+## Milestone 2 (2026-07): funding features + tuning + ensemble
+
+Added Binance perp funding-rate features (69.7k settlements, point-in-time
+asof joins), multi-scale horizons to 336h, Optuna tuning confined to the
+first train window with inner purged splits, and a 3-member ensemble.
+Per-model OOS diagnostics (same 18 folds):
+
+| model | pooled IC | NW t-stat |
+|---|---|---|
+| LightGBM (tuned, funding) | +0.038 | **1.92** |
+| CatBoost | +0.039 | 1.35 |
+| TabPFN (recent-10k window) | +0.015 | -0.29 |
+| rank-average (diagnostic) | **+0.049** | 1.29 |
+| mean ensemble (traded) | +0.032 | 0.10 |
+
+Findings: funding + tuning raised single-model NW t from 0.58 (M1) to 1.92
+— near the 1.96 significance bar. TabPFN's 10k-recency view is weak on this
+noise level and DILUTES the mean ensemble (traded mean underperformed both
+boosters: net +22.8%, Sharpe 0.32); rank-average is the strongest ranking
+signal. Engineering notes: TabPFN runs in a subprocess (duplicate-OpenMP
+deadlock with boosters on macOS); TabPFN weights are NON-COMMERCIAL
+licensed — must be dropped before real-money use.
