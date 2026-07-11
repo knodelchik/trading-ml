@@ -186,6 +186,83 @@ def test_execution_delay_shifts_fills_one_bar(tmp_path):
     assert final_usdt == pytest.approx(100_088.19, abs=0.05)
 
 
+def test_on_stop_close_is_journaled(tmp_path):
+    """A position still open at end-of-data is closed by on_stop, but that
+    fill executes after the strategy stopped and never reaches
+    on_order_filled — the runner must replay it into the journal:
+    BUY 10 @ 100 (fee 1.30), on_stop SELL 10 @ 120 (fee 1.56),
+    final = 100000 + 200 - 1.30 - 1.56 = 100197.14."""
+    from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+    from nautilus_trader.backtest.models import FillModel, MakerTakerFeeModel
+    from nautilus_trader.config import LoggingConfig
+    from nautilus_trader.model.currencies import USDT
+    from nautilus_trader.model.enums import AccountType, OmsType
+    from nautilus_trader.model.identifiers import TraderId, Venue
+    from nautilus_trader.model.objects import Money
+
+    from tml.backtest.data_prep import VENUE_NAME, bars_for_pair, make_instrument
+    from tml.backtest.runner import _replay_missed_fills
+    from tml.backtest.strategy import SignalStrategy
+
+    cfg = make_config(tmp_path, pairs=("LTC/USDT",))
+    _write_bars(cfg)
+
+    engine = BacktestEngine(
+        config=BacktestEngineConfig(
+            trader_id=TraderId("SMOKE-003"), logging=LoggingConfig(bypass_logging=True)
+        )
+    )
+    engine.add_venue(
+        venue=Venue(VENUE_NAME),
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.CASH,
+        base_currency=None,
+        starting_balances=[Money(100_000, USDT)],
+        fill_model=FillModel(prob_slippage=0.0, random_seed=1),
+        fee_model=MakerTakerFeeModel(),
+    )
+    inst = make_instrument(cfg, "LTC/USDT")
+    engine.add_instrument(inst)
+    engine.add_data(bars_for_pair(cfg, "LTC/USDT", inst, T0, T0 + timedelta(hours=4)))
+
+    ns = lambda dt: int(dt.timestamp() * 1_000_000_000)  # noqa: E731
+    signals = {
+        (f"LTCUSDT.{VENUE_NAME}", ns(T0 + timedelta(hours=i))): +1.0 for i in range(3)
+    }
+    strategy = SignalStrategy(
+        signals=signals,
+        instruments=[inst],
+        timeframe="1h",
+        enter_threshold=0.0,
+        exit_threshold=0.0,
+        notional_per_pair=1000.0,
+        initial_cash=100_000.0,
+        fee_rate=0.0013,
+    )
+    engine.add_strategy(strategy)
+    engine.run()
+
+    n_before_replay = len(strategy.fills)
+    _replay_missed_fills(engine, strategy)
+
+    account = engine.portfolio.account(Venue(VENUE_NAME))
+    final_usdt = float(account.balance_total(USDT).as_double())
+    engine.dispose()
+
+    assert n_before_replay == 1  # only the BUY reached on_order_filled
+    assert len(strategy.fills) == 2  # replay recovered the on_stop SELL
+    sell = strategy.fills[-1]
+    assert sell["side"] == "SELL"
+    assert sell["px"] == pytest.approx(120.0)
+    assert final_usdt == pytest.approx(100_197.14, abs=0.05)
+    # journal-reconstructed cash now matches the engine account
+    cash = 100_000.0
+    for f in strategy.fills:
+        flow = -f["qty"] * f["px"] if f["side"] == "BUY" else f["qty"] * f["px"]
+        cash += flow - f["commission_usdt"]
+    assert cash == pytest.approx(final_usdt, abs=0.05)
+
+
 def test_signal_fold_alignment_guard():
     from tml.backtest.runner import assert_signals_in_folds
 

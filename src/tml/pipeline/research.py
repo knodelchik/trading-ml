@@ -86,11 +86,15 @@ def run_cv(cfg: Config) -> int:
 
     # Pre-cost signal SR per period, recorded for the DSR trial history:
     # equal-weight portfolio of per-name positions sized by sign(score).
+    # Stride-H non-overlapping subsample — MUST match the estimator used for
+    # the deflation candidate in reporting, or the trial-history variance
+    # measures estimator mismatch instead of selection breadth.
     port = (
         oos.with_columns(r=pl.col("y_true") * pl.col("score").sign())
         .group_by("ts")
         .agg(pl.col("r").mean())
         .sort("ts")["r"]
+        .gather_every(cfg.labels.horizon_bars)
         .to_numpy()
     )
     sr_pp = float(np.nanmean(port) / np.nanstd(port, ddof=1)) if len(port) > 2 else None

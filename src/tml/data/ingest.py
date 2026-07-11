@@ -55,6 +55,11 @@ def fetch_pair(exchange: ccxt.Exchange, cfg: Config, pair: str) -> int:
         # stored ts is a CLOSE time == OPEN time of the next bar
         since_ms = int(last.timestamp() * 1000)
 
+    # snapshot BEFORE fetching: a bar whose close boundary passes during
+    # pagination was snapshotted mid-formation by the exchange — it must be
+    # dropped now and re-fetched complete on the next run (resume is based
+    # on the last STORED close, so no gap arises)
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
     rows: list[list] = []
     while True:
         page = _fetch_page(exchange, pair, cfg.data.timeframe, since_ms)
@@ -71,7 +76,6 @@ def fetch_pair(exchange: ccxt.Exchange, cfg: Config, pair: str) -> int:
     if not rows:
         return 0
 
-    now_ms = int(datetime.now(UTC).timestamp() * 1000)
     df = rows_to_frame(rows, bar_ms, store.pair_key(pair), now_ms)
     for (year,), part in df.with_columns(year=pl.col("ts").dt.year()).group_by(
         "year", maintain_order=True

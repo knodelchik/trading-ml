@@ -79,7 +79,10 @@ def compute_cv_metrics(cfg: Config) -> dict:
             "trials.jsonl is missing or empty — DSR cannot be honest without the full "
             "history of evaluated configurations. Run `tml cv` (it appends to the ledger)."
         )
-    dsr = metrics.deflated_sharpe(sr_pp, ledger.sharpe_history(), len(port_no), skew, kurt)
+    # deflate the pre-cost candidate against the pre-cost (cv) trial family
+    # only — mixing in net-of-cost backtest SRs would make the expected-max
+    # benchmark measure the cost gap instead of selection breadth
+    dsr = metrics.deflated_sharpe(sr_pp, ledger.sharpe_history("cv"), len(port_no), skew, kurt)
 
     out = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -153,6 +156,18 @@ def _plot_equity(equity: pl.DataFrame, path) -> None:
     plt.close(fig)
 
 
+def _trials_disclosure(cfg: Config) -> str:
+    ledger = TrialsLedger(store.trials_path(cfg))
+    cv_raw, cv_distinct = ledger.counts("cv")
+    bt_raw, bt_distinct = ledger.counts("backtest")
+    return (
+        "- Trials ledger (`artifacts/trials.jsonl`, append-only): "
+        f"cv {cv_distinct} distinct configuration(s) over {cv_raw} record(s); "
+        f"backtest {bt_distinct} distinct over {bt_raw}. DSR benchmarks use distinct "
+        "same-stage, same-estimator trials only; idempotent re-runs are not new trials."
+    )
+
+
 def build_report(cfg: Config) -> int:
     cvm = compute_cv_metrics(cfg)
     oos = pl.read_parquet(store.oos_path(cfg))
@@ -222,7 +237,7 @@ def build_report(cfg: Config) -> int:
         psr_net = metrics.probabilistic_sharpe(sr_net, 0.0, len(r_net), skew_n, kurt_n)
         dsr_net = metrics.deflated_sharpe(
             sr_net,
-            TrialsLedger(store.trials_path(cfg)).sharpe_history(),
+            TrialsLedger(store.trials_path(cfg)).sharpe_history("backtest"),
             len(r_net),
             skew_n,
             kurt_n,
@@ -247,8 +262,7 @@ def build_report(cfg: Config) -> int:
         "on Binance before Sep 2020; results would differ over delisted names.",
         "- Labels overlap (H bars); IC significance uses Newey-West, PSR/DSR use "
         "non-overlapping subsampling.",
-        f"- Every evaluated configuration is recorded in `artifacts/trials.jsonl`; "
-        f"DSR is parameterized by that count ({int(sp['n_trials'])}).",
+        _trials_disclosure(cfg),
     ]
 
     stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")

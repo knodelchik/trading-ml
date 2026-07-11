@@ -42,15 +42,18 @@ OOS 2022-01 → 2026-06, 18 walk-forward folds, 388,800 predictions.
 - Execution-latency sensitivity (`execution_delay_bars = 1`, decide at bar
   t, fill at t+1 close): **+39.4%, Sharpe 0.61** — degrades but survives.
 - Same-window equal-weight buy-and-hold benchmark: **-30.0%**, maxDD -70.5%.
-- **Net DSR 0.890 over 7 recorded trials — below the 0.95 bar.** The net
-  result gets the same deflation treatment as the research signal.
+- **Net DSR: 0.959 over the two serious execution variants; 0.054 once the
+  deliberately-naive threshold-0 trial joins the family** (the expected-max
+  benchmark is extremely sensitive to degenerate trials — both numbers are
+  reported rather than silently choosing one). Ledger counts distinct
+  same-stage, same-estimator configurations; re-runs are not new trials.
 - Instructive negative result recorded in the ledger: the same signal traded
   every bar at threshold 0 lost -99.95% to costs. Turnover discipline
   matters more than model choice at this horizon.
 
 Interpretation: directional timing added value over market beta net of
-costs and survives one bar of execution latency, but after deflating for
-the configurations tried, the evidence does not clear the significance
-bar — promising, NOT proven, and NOT a green light for real money. Next:
-M2 (ensembles, better features, funding data), then Bybit demo paper
-trading via the nautilus live node.
+costs and survives one bar of execution latency, but the evidence rests on
+one signal family over one 4.4-year window and does not robustly clear the
+deflated significance bar — promising, NOT proven, and NOT a green light
+for real money. Next: M2 (ensembles, better features, funding data), then
+Bybit demo paper trading via the nautilus live node.

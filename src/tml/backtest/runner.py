@@ -102,6 +102,12 @@ def run_backtest(cfg: Config) -> int:
     engine.add_strategy(strategy)
     engine.run()
 
+    # on_stop close_all_positions fills execute at the engine AFTER the
+    # strategy is stopped, so on_order_filled never sees them — replay any
+    # missing fills from the engine cache into the journal, or a run ending
+    # long would fail the cash cross-check with a phantom mismatch
+    _replay_missed_fills(engine, strategy)
+
     # --- results ---
     fills = pl.DataFrame(
         strategy.fills,
@@ -125,9 +131,11 @@ def run_backtest(cfg: Config) -> int:
     (out / "stats.json").write_text(json.dumps(stats, indent=2))
 
     # every backtest variant is a trial: threshold choices are multiple
-    # testing and must deflate the Sharpe like any other configuration
-    r = np.diff(equity["equity"].to_numpy()) / equity["equity"].to_numpy()[:-1]
-    hourly_sr = float(np.nanmean(r) / np.nanstd(r, ddof=1)) if len(r) > 2 else None
+    # testing and must deflate the Sharpe like any other configuration.
+    # Same stride-H non-overlapping estimator as reporting's net candidate.
+    eq_h = equity["equity"].gather_every(cfg.labels.horizon_bars).to_numpy()
+    r_h = np.diff(eq_h) / eq_h[:-1]
+    sr_h = float(np.nanmean(r_h) / np.nanstd(r_h, ddof=1)) if len(r_h) > 2 else None
     TrialsLedger(store.trials_path(cfg)).append(
         {
             "stage": "backtest",
@@ -135,13 +143,40 @@ def run_backtest(cfg: Config) -> int:
             "enter_threshold": cfg.backtest.enter_threshold,
             "exit_threshold": cfg.backtest.exit_threshold,
             "execution_delay_bars": cfg.backtest.execution_delay_bars,
-            # per-24h-period units, comparable with CV trial records
-            "sr_per_period": hourly_sr * (24**0.5) if hourly_sr is not None else None,
+            "sr_per_period": sr_h,
             "net_total_return_pct": stats["total_return_pct"],
         }
     )
     print(json.dumps(stats, indent=2))
     return 0
+
+
+def _replay_missed_fills(engine, strategy) -> None:
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.events import OrderFilled
+
+    seen = {
+        (f["ts"], f["instrument"], f["side"], round(float(f["qty"]), 9), round(float(f["px"]), 9))
+        for f in strategy.fills
+    }
+    for order in engine.cache.orders():
+        for ev in order.events:
+            if not isinstance(ev, OrderFilled):
+                continue
+            side = "BUY" if ev.order_side == OrderSide.BUY else "SELL"
+            rec = {
+                "ts": int(ev.ts_event),
+                "instrument": str(ev.instrument_id),
+                "side": side,
+                "qty": float(ev.last_qty),
+                "px": float(ev.last_px),
+                "commission_usdt": float(ev.commission.as_double()) if ev.commission else 0.0,
+            }
+            qty_f, px_f = float(ev.last_qty), float(ev.last_px)
+            key = (rec["ts"], rec["instrument"], side, round(qty_f, 9), round(px_f, 9))
+            if key not in seen:
+                strategy.fills.append(rec)
+                seen.add(key)
 
 
 def _equity_curve(cfg: Config, fills: pl.DataFrame, closes: pl.DataFrame) -> pl.DataFrame:

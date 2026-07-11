@@ -19,6 +19,11 @@ import polars as pl
 from tml.config import Config
 from tml.data import store
 
+# a pair must actually contain >= this fraction of the bars its own
+# [ts_min, ts_max] span implies — otherwise a mostly-empty series would
+# silently pass as "ok" with a long gap list
+MIN_COVERAGE = 0.95
+
 
 @dataclass
 class PairQuality:
@@ -26,6 +31,7 @@ class PairQuality:
     rows: int
     ts_min: str
     ts_max: str
+    coverage: float
     duplicate_ts: int
     non_monotonic: int
     non_positive_prices: int
@@ -41,6 +47,7 @@ class PairQuality:
             or self.non_positive_prices
             or self.ohlc_violations
             or self.partial_candles
+            or self.coverage < MIN_COVERAGE
         )
 
 
@@ -83,11 +90,13 @@ def check_pair(cfg: Config, pair: str) -> PairQuality:
         for row in gap_df.iter_rows(named=True)
     ]
 
+    span_bars = int((cast(datetime, ts.max()) - cast(datetime, ts.min())) / bar) + 1
     return PairQuality(
         pair=store.pair_key(pair),
         rows=df.height,
         ts_min=cast(datetime, ts.min()).isoformat(),
         ts_max=cast(datetime, ts.max()).isoformat(),
+        coverage=round(df.height / span_bars, 6),
         duplicate_ts=dup,
         non_monotonic=non_mono,
         non_positive_prices=non_pos,
@@ -110,7 +119,10 @@ def run_quality(cfg: Config) -> int:
 
     for r in reports:
         status = "FAIL" if r.hard_fail else "ok"
-        print(f"{r.pair}: {r.rows} rows [{r.ts_min} .. {r.ts_max}] gaps={len(r.gaps)} {status}")
+        print(
+            f"{r.pair}: {r.rows} rows [{r.ts_min} .. {r.ts_max}] "
+            f"coverage={r.coverage:.4f} gaps={len(r.gaps)} {status}"
+        )
     if out["hard_fail"]:
         print("quality: HARD FAILURES present, see quality_report.json")
         return 1

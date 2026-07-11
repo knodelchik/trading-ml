@@ -101,6 +101,13 @@ class CVConfig(_Frozen):
             raise ValueError("cv window sizes must be positive")
         return v
 
+    @field_validator("purge_bars", "embargo_bars")
+    @classmethod
+    def _non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("purge_bars/embargo_bars must be >= 0 (negative embargo = leakage)")
+        return v
+
 
 class LGBMConfig(_Frozen):
     seed: int
