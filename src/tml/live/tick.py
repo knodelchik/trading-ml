@@ -16,15 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 from tml.config import Config
 from tml.live import state
-
-
-def decide(score: float, is_long: bool, enter: float, exit_: float) -> str:
-    """-> 'open' | 'close' | 'hold' (pure; unit-tested)."""
-    if not is_long and score > enter:
-        return "open"
-    if is_long and score < exit_:
-        return "close"
-    return "hold"
+from tml.policy import decide, position_state
 
 
 def run_tick(cfg: Config) -> int:
@@ -58,9 +50,10 @@ def run_tick(cfg: Config) -> int:
     filters = ex.lot_filters()
     ex.ensure_leverage_1x()
     positions = ex.positions()
-    short_positions = {s: q for s, q in positions.items() if q < 0}
-    if short_positions:
-        raise RuntimeError(f"unexpected SHORT positions on the account: {short_positions}")
+    if not cfg.backtest.allow_short:
+        short_positions = {s: q for s, q in positions.items() if q < 0}
+        if short_positions:
+            raise RuntimeError(f"unexpected SHORT positions on the account: {short_positions}")
 
     # 4) decide + submit
     hour_tag = latest_ts.strftime("%Y%m%d%H")
@@ -73,8 +66,14 @@ def run_tick(cfg: Config) -> int:
     for row in scores.iter_rows(named=True):
         symbol, px, score = row["pair"], float(row["close"]), float(row["score"])
         current_qty = positions.get(symbol, 0.0)
-        is_long = current_qty * px >= cfg.live.min_order_notional_usdt
-        action = decide(score, is_long, cfg.backtest.enter_threshold, cfg.backtest.exit_threshold)
+        pos_state = position_state(current_qty, px, cfg.live.min_order_notional_usdt)
+        action = decide(
+            score,
+            pos_state,
+            cfg.backtest.enter_threshold,
+            cfg.backtest.exit_threshold,
+            cfg.backtest.allow_short,
+        )
         state.log_decision(
             cfg,
             {
@@ -83,12 +82,13 @@ def run_tick(cfg: Config) -> int:
                 "score": score,
                 "close_binance": px,
                 "position_qty": current_qty,
+                "state": pos_state,
                 "action": action,
             },
         )
         if action == "hold":
             continue
-        if action == "open":
+        if action in ("open_long", "open_short"):
             budget = min(
                 cfg.live.notional_per_pair_usdt,
                 max(0.0, cfg.live.max_total_exposure_usdt - exposure),
@@ -97,13 +97,15 @@ def run_tick(cfg: Config) -> int:
             if float(qty) * px < cfg.live.min_order_notional_usdt or qty < filters[symbol].min_qty:
                 state.log_error(cfg, {"stage": "sizing", "symbol": symbol, "budget": budget})
                 continue
-            side, reduce_only = "Buy", False
+            side = "Buy" if action == "open_long" else "Sell"
+            reduce_only = False
             exposure += float(qty) * px
-        else:  # close
+        else:  # close (long or short)
             qty = ex.quantize(symbol, abs(current_qty), filters)
             if qty <= 0:
                 continue
-            side, reduce_only = "Sell", True
+            side = "Sell" if pos_state == "long" else "Buy"
+            reduce_only = True
             exposure -= float(qty) * px
 
         link_id = f"tml-{symbol}-{hour_tag}-{'o' if side == 'Buy' else 'c'}"

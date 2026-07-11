@@ -23,49 +23,56 @@ VENUE_NAME = "BINANCE"
 from nautilus_trader.model.currencies import USDT  # noqa: E402
 from nautilus_trader.model.data import Bar, BarType  # noqa: E402
 from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue  # noqa: E402
-from nautilus_trader.model.instruments import CurrencyPair  # noqa: E402
+from nautilus_trader.model.instruments import CryptoPerpetual  # noqa: E402
 from nautilus_trader.model.objects import Currency, Price, Quantity  # noqa: E402
 
 PRICE_PRECISION = 6
 SIZE_PRECISION = 6
 
 
-def make_instrument(cfg: Config, pair: str) -> CurrencyPair:
+def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
+    """Linear USDT perpetual (matches what the live bot trades on Bybit).
+
+    Symbol stays exactly `BTCUSDT`: signals and bar types key on
+    `{symbol}.{venue}`, so renaming (e.g. BTCUSDT-PERP) would silently turn
+    every bar into a missing-signal no-op.
+    """
     key = store.pair_key(pair)  # e.g. BTCUSDT
     base = pair.split("/")[0]
     effective_taker = Decimal(cfg.backtest.taker_fee_bps + cfg.backtest.slippage_bps) / Decimal(10_000)
-    return CurrencyPair(
+    return CryptoPerpetual(
         instrument_id=InstrumentId(Symbol(key), Venue(VENUE_NAME)),
         raw_symbol=Symbol(key),
         base_currency=Currency.from_str(base),
         quote_currency=USDT,
+        settlement_currency=USDT,
+        is_inverse=False,
         price_precision=PRICE_PRECISION,
         size_precision=SIZE_PRECISION,
         price_increment=Price(10**-PRICE_PRECISION, precision=PRICE_PRECISION),
         size_increment=Quantity(10**-SIZE_PRECISION, precision=SIZE_PRECISION),
-        lot_size=None,
+        ts_event=0,
+        ts_init=0,
         max_quantity=Quantity(1e9, precision=SIZE_PRECISION),
         min_quantity=Quantity(10**-SIZE_PRECISION, precision=SIZE_PRECISION),
         max_notional=None,
         min_notional=None,
         max_price=Price(100_000_000, precision=PRICE_PRECISION),
         min_price=Price(10**-PRICE_PRECISION, precision=PRICE_PRECISION),
-        margin_init=Decimal(0),
+        margin_init=Decimal(0),  # engine skips margin risk checks anyway; blow-up guard is ours
         margin_maint=Decimal(0),
         maker_fee=effective_taker,  # we only send market orders; keep symmetric
         taker_fee=effective_taker,
-        ts_event=0,
-        ts_init=0,
     )
 
 
-def bar_type_for(instrument: CurrencyPair, timeframe: str) -> BarType:
+def bar_type_for(instrument: CryptoPerpetual, timeframe: str) -> BarType:
     spec = {"1h": "1-HOUR", "1d": "1-DAY", "1m": "1-MINUTE"}[timeframe]
     return BarType.from_str(f"{instrument.id}-{spec}-LAST-EXTERNAL")
 
 
 def bars_for_pair(
-    cfg: Config, pair: str, instrument: CurrencyPair, start: datetime, end: datetime
+    cfg: Config, pair: str, instrument: CryptoPerpetual, start: datetime, end: datetime
 ) -> list[Bar]:
     """Raw parquet -> nautilus Bar list, window-filtered [start, end).
 

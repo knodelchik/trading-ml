@@ -5,11 +5,9 @@ The strategy consumes ONLY the precomputed OOS predictions from the CV stage
 CV test folds is asserted by the runner before the engine starts, and the
 strategy fail-fasts on any signal timestamp it was not given.
 
-Decision rule at bar close t (score known at t, fill at t's close + costs),
-with hysteresis to keep turnover economically sane on an H-bar-horizon signal:
-    flat and score > enter_threshold  ->  buy notional_per_pair (cash-capped)
-    long and score < exit_threshold   ->  sell the whole position
-    otherwise                         ->  hold (no per-bar size rebalancing)
+Decision rule at bar close t (score known at t, fill at t's close + costs):
+the shared symmetric hysteresis from tml.policy — the SAME function the live
+tick executes, so research and production cannot diverge.
 """
 
 from __future__ import annotations
@@ -21,6 +19,7 @@ from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.trading.strategy import Strategy
 
 from tml.backtest.data_prep import bar_type_for
+from tml.policy import decide, position_state
 
 
 class SignalStrategy(Strategy):
@@ -36,6 +35,7 @@ class SignalStrategy(Strategy):
         fee_rate: float,
         min_rebalance_notional: float = 25.0,
         execution_delay_bars: int = 0,
+        allow_short: bool = False,
     ):
         super().__init__()
         self.signals = signals
@@ -43,6 +43,7 @@ class SignalStrategy(Strategy):
         self._timeframe = timeframe
         self.enter_threshold = enter_threshold
         self.exit_threshold = exit_threshold
+        self.allow_short = allow_short
         self.notional = notional_per_pair
         # decision-to-execution latency: act on the score from `delay` bars
         # ago, so the fill lands at a later bar's close than the decision bar
@@ -78,19 +79,24 @@ class SignalStrategy(Strategy):
         px = float(bar.close)
         inst = self.cache.instrument(inst_id)
         current_qty = float(self.portfolio.net_position(inst_id) or 0.0)
-        is_long = current_qty * px >= self.min_rebalance_notional
+        state = position_state(current_qty, px, self.min_rebalance_notional)
+        action = decide(score, state, self.enter_threshold, self.exit_threshold, self.allow_short)
+        if action == "hold":
+            return
 
-        if not is_long and score > self.enter_threshold:
+        if action == "open_long":
             # cap the buy to available cash net of a fee cushion
             headroom = self._cash / (1 + 2 * self.fee_rate) - self.min_rebalance_notional
             affordable = max(0.0, min(self.notional, headroom))
             if affordable < self.min_rebalance_notional:
                 return
             side, qty_f = OrderSide.BUY, affordable / px
-        elif is_long and score < self.exit_threshold:
+        elif action == "open_short":
+            side, qty_f = OrderSide.SELL, self.notional / px
+        elif state == "long":  # close long
             side, qty_f = OrderSide.SELL, current_qty
-        else:
-            return  # hold — trades happen only on state transitions
+        else:  # close short
+            side, qty_f = OrderSide.BUY, abs(current_qty)
 
         qty = inst.make_qty(qty_f)
         if qty.as_double() <= 0:

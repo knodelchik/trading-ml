@@ -7,9 +7,17 @@ exchange = "binance"          # fallback if geo-blocked: "bybit"
 timeframe = "1h"
 since = "2020-01-01T00:00:00Z"
 funding = true                # USDT-perp funding rates as features
+# 22-pair universe (M4): original 10 + 12 verified additions. Criteria:
+# Binance spot history <= 2021-06, funding history exists, Bybit linear
+# Trading, liquidity >= half of weakest incumbent. SHIB excluded: 1000x
+# contract multiplier mismatch across venues. INJ funding starts 2022-08 —
+# handled by the fund_known feature flag.
 pairs = [
     "BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
     "SOL/USDT", "DOGE/USDT", "LTC/USDT", "LINK/USDT", "DOT/USDT",
+    "AAVE/USDT", "UNI/USDT", "NEAR/USDT", "HBAR/USDT", "XLM/USDT",
+    "INJ/USDT", "AVAX/USDT", "TRX/USDT", "FIL/USDT", "THETA/USDT",
+    "ICP/USDT", "CHZ/USDT",
 ]
 
 [features]
@@ -72,7 +80,8 @@ inner_train_frac = 0.5
 
 [live]
 # Bybit DEMO paper trading (virtual money, real mainnet prices)
-notional_per_pair_usdt = 10000.0
+# mirrors backtest sizing: initial_cash / n_pairs (100k / 22)
+notional_per_pair_usdt = 4500.0
 model_max_age_days = 90            # mirrors the walk-forward retrain cadence
 min_order_notional_usdt = 25.0
 max_total_exposure_usdt = 100000.0
@@ -83,6 +92,7 @@ max_total_exposure_usdt = 100000.0
 # negative; positions trade only on state transitions, not every bar
 enter_threshold = 0.5
 exit_threshold = 0.0
+allow_short = true               # M4: symmetric hysteresis on linear perps
 taker_fee_bps = 10.0               # Binance spot default
 slippage_bps = 3.0
 execution_delay_bars = 0           # set 1 for conservative next-bar-fill run

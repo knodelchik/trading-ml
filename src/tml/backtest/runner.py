@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import numpy as np
 import polars as pl
@@ -68,9 +69,10 @@ def run_backtest(cfg: Config) -> int:
     engine.add_venue(
         venue=Venue(VENUE_NAME),
         oms_type=OmsType.NETTING,
-        account_type=AccountType.CASH,
-        base_currency=None,  # multi-currency CASH account
+        account_type=AccountType.MARGIN,  # perps; shorts allowed
+        base_currency=USDT,  # single-currency USDT margin account
         starting_balances=[Money(cfg.backtest.initial_cash_usdt, USDT)],
+        default_leverage=Decimal(1),  # MUST be explicit: MARGIN default is 10x
         fill_model=FillModel(prob_slippage=0.0, random_seed=cfg.model.lgbm.seed),
         fee_model=MakerTakerFeeModel(),  # reads effective taker (incl. slippage bps) off instruments
     )
@@ -98,6 +100,7 @@ def run_backtest(cfg: Config) -> int:
         initial_cash=cfg.backtest.initial_cash_usdt,
         fee_rate=(cfg.backtest.taker_fee_bps + cfg.backtest.slippage_bps) / 10_000,
         execution_delay_bars=cfg.backtest.execution_delay_bars,
+        allow_short=cfg.backtest.allow_short,
     )
     engine.add_strategy(strategy)
     engine.run()
@@ -179,6 +182,37 @@ def _replay_missed_fills(engine, strategy) -> None:
                 seen.add(key)
 
 
+def _funding_flows(cfg: Config, grid: pl.DataFrame) -> pl.DataFrame:
+    """Funding cash flows for held perp positions, applied at the next bar.
+
+    Long positions PAY positive funding (flow = -pos * close * rate); shorts
+    receive it. The nautilus engine does not simulate funding, so this
+    post-processing uses the same settlement history the features use.
+    Returns (ts, funding_flow) aggregated per hourly mark.
+    """
+    from tml.data.funding import scan_funding
+
+    frames = [lf.collect() for p in cfg.data.pairs if (lf := scan_funding(cfg, p)) is not None]
+    if not frames:
+        return pl.DataFrame(
+            schema={"ts": pl.Datetime("us", "UTC"), "funding_flow": pl.Float64()}
+        )
+    g = grid.select("ts", "pair", "pos", "close").sort("pair", "ts")
+    fund = (
+        pl.concat(frames)
+        .filter((pl.col("ts") >= g["ts"].min()) & (pl.col("ts") <= g["ts"].max()))
+        .sort("pair", "ts")
+        .join_asof(g, on="ts", by="pair", strategy="backward")
+        .drop_nulls("pos")
+        .with_columns(flow=-(pl.col("pos") * pl.col("close") * pl.col("rate")))
+        # settlement (with ms jitter) hits the account by the NEXT hourly mark
+        .with_columns(apply_ts=pl.col("ts").dt.truncate("1h") + pl.duration(hours=1))
+    )
+    return fund.group_by("apply_ts").agg(pl.col("flow").sum().alias("funding_flow")).rename(
+        {"apply_ts": "ts"}
+    )
+
+
 def _equity_curve(cfg: Config, fills: pl.DataFrame, closes: pl.DataFrame) -> pl.DataFrame:
     """Mark-to-market equity per hour from the fill journal (pure polars/numpy)."""
     f = (
@@ -203,12 +237,17 @@ def _equity_curve(cfg: Config, fills: pl.DataFrame, closes: pl.DataFrame) -> pl.
     cash_by_ts = (
         f.group_by("ts").agg(pl.col("cash_flow").sum()).sort("ts")
     )
+    funding = _funding_flows(cfg, grid)
     equity = (
         mtm_by_ts.join(cash_by_ts, on="ts", how="left")
+        .join(funding, on="ts", how="left")
         .sort("ts")
-        .with_columns(cash=cfg.backtest.initial_cash_usdt + pl.col("cash_flow").fill_null(0.0).cum_sum())
-        .with_columns(equity=pl.col("cash") + pl.col("mtm"))
-        .select("ts", "cash", "mtm", "equity")
+        .with_columns(
+            cash=cfg.backtest.initial_cash_usdt + pl.col("cash_flow").fill_null(0.0).cum_sum(),
+            funding_cum=pl.col("funding_flow").fill_null(0.0).cum_sum(),
+        )
+        .with_columns(equity=pl.col("cash") + pl.col("mtm") + pl.col("funding_cum"))
+        .select("ts", "cash", "mtm", "funding_cum", "equity")
     )
     return equity
 
@@ -224,6 +263,13 @@ def _stats(
 ) -> dict:
     eq = equity["equity"].to_numpy()
     ts = equity["ts"]
+    # the MARGIN engine performs NO balance checks and never liquidates —
+    # a silent mid-run blow-up must fail loudly here instead
+    if float(eq.min()) <= 0:
+        raise RuntimeError(
+            f"reconstructed equity went non-positive (min {eq.min():.2f}) — "
+            "the margin engine would not have halted; treat this run as a blow-up"
+        )
     r = np.diff(eq) / eq[:-1]
     peak = np.maximum.accumulate(eq)
     dd = (eq - peak) / peak
@@ -263,6 +309,8 @@ def _stats(
         "gross_traded_usdt": round(gross_traded, 0),
         "turnover_x_initial": round(gross_traded / cfg.backtest.initial_cash_usdt, 1),
         "total_costs_usdt": round(total_fees, 2),
+        "funding_net_usdt": round(float(equity["funding_cum"][-1]), 2),
+        "allow_short": cfg.backtest.allow_short,
         "cost_model": f"taker {cfg.backtest.taker_fee_bps}bps + slippage {cfg.backtest.slippage_bps}bps baked into fee",
         "missing_signal_bars": missing_signals,
         "engine_vs_journal_cash_mismatch_frac": round(cash_mismatch, 6),

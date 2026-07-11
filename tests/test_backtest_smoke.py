@@ -13,6 +13,7 @@ decision-at-close semantics.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -68,8 +69,9 @@ def test_two_fills_hand_computed_pnl(tmp_path):
     engine.add_venue(
         venue=Venue(VENUE_NAME),
         oms_type=OmsType.NETTING,
-        account_type=AccountType.CASH,
-        base_currency=None,
+        account_type=AccountType.MARGIN,
+        base_currency=USDT,
+        default_leverage=Decimal(1),
         starting_balances=[Money(100_000, USDT)],
         fill_model=FillModel(prob_slippage=0.0, random_seed=1),
         fee_model=MakerTakerFeeModel(),
@@ -146,8 +148,9 @@ def test_execution_delay_shifts_fills_one_bar(tmp_path):
     engine.add_venue(
         venue=Venue(VENUE_NAME),
         oms_type=OmsType.NETTING,
-        account_type=AccountType.CASH,
-        base_currency=None,
+        account_type=AccountType.MARGIN,
+        base_currency=USDT,
+        default_leverage=Decimal(1),
         starting_balances=[Money(100_000, USDT)],
         fill_model=FillModel(prob_slippage=0.0, random_seed=1),
         fee_model=MakerTakerFeeModel(),
@@ -215,8 +218,9 @@ def test_on_stop_close_is_journaled(tmp_path):
     engine.add_venue(
         venue=Venue(VENUE_NAME),
         oms_type=OmsType.NETTING,
-        account_type=AccountType.CASH,
-        base_currency=None,
+        account_type=AccountType.MARGIN,
+        base_currency=USDT,
+        default_leverage=Decimal(1),
         starting_balances=[Money(100_000, USDT)],
         fill_model=FillModel(prob_slippage=0.0, random_seed=1),
         fee_model=MakerTakerFeeModel(),
@@ -261,6 +265,73 @@ def test_on_stop_close_is_journaled(tmp_path):
         flow = -f["qty"] * f["px"] if f["side"] == "BUY" else f["qty"] * f["px"]
         cash += flow - f["commission_usdt"]
     assert cash == pytest.approx(final_usdt, abs=0.05)
+
+
+def test_short_round_trip_hand_computed(tmp_path):
+    """Short on a MARGIN perp: SELL 10 @ 100 (fee 1.30), BUY back @ 110
+    (fee 1.43). Realized = -100; final = 100000 - 100 - 2.73 = 99897.27."""
+    from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+    from nautilus_trader.backtest.models import FillModel, MakerTakerFeeModel
+    from nautilus_trader.config import LoggingConfig
+    from nautilus_trader.model.currencies import USDT
+    from nautilus_trader.model.enums import AccountType, OmsType
+    from nautilus_trader.model.identifiers import TraderId, Venue
+    from nautilus_trader.model.objects import Money
+
+    from tml.backtest.data_prep import VENUE_NAME, bars_for_pair, make_instrument
+    from tml.backtest.strategy import SignalStrategy
+
+    cfg = make_config(tmp_path, pairs=("LTC/USDT",))
+    _write_bars(cfg)
+
+    engine = BacktestEngine(
+        config=BacktestEngineConfig(
+            trader_id=TraderId("SMOKE-004"), logging=LoggingConfig(bypass_logging=True)
+        )
+    )
+    engine.add_venue(
+        venue=Venue(VENUE_NAME),
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.MARGIN,
+        base_currency=USDT,
+        default_leverage=Decimal(1),
+        starting_balances=[Money(100_000, USDT)],
+        fill_model=FillModel(prob_slippage=0.0, random_seed=1),
+        fee_model=MakerTakerFeeModel(),
+    )
+    inst = make_instrument(cfg, "LTC/USDT")
+    engine.add_instrument(inst)
+    engine.add_data(bars_for_pair(cfg, "LTC/USDT", inst, T0, T0 + timedelta(hours=4)))
+
+    ns = lambda dt: int(dt.timestamp() * 1_000_000_000)  # noqa: E731
+    signals = {
+        (f"LTCUSDT.{VENUE_NAME}", ns(T0)): -1.0,
+        (f"LTCUSDT.{VENUE_NAME}", ns(T0 + timedelta(hours=1))): +1.0,
+        (f"LTCUSDT.{VENUE_NAME}", ns(T0 + timedelta(hours=2))): +0.0,
+    }
+    strategy = SignalStrategy(
+        signals=signals,
+        instruments=[inst],
+        timeframe="1h",
+        enter_threshold=0.0,
+        exit_threshold=0.0,
+        notional_per_pair=1000.0,
+        initial_cash=100_000.0,
+        fee_rate=0.0013,
+        allow_short=True,
+    )
+    engine.add_strategy(strategy)
+    engine.run()
+    account = engine.portfolio.account(Venue(VENUE_NAME))
+    final_usdt = float(account.balance_total(USDT).as_double())
+    engine.dispose()
+
+    assert len(strategy.fills) == 2, strategy.fills
+    sell, buy = strategy.fills
+    assert sell["side"] == "SELL" and sell["px"] == pytest.approx(100.0)
+    assert buy["side"] == "BUY" and buy["px"] == pytest.approx(110.0)
+    assert sell["qty"] == pytest.approx(10.0) and buy["qty"] == pytest.approx(10.0)
+    assert final_usdt == pytest.approx(99_897.27, abs=0.05)
 
 
 def test_signal_fold_alignment_guard():

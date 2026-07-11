@@ -178,6 +178,7 @@ class LiveConfig(_Frozen):
 class BacktestConfig(_Frozen):
     enter_threshold: float
     exit_threshold: float
+    allow_short: bool = False
     taker_fee_bps: float
     slippage_bps: float
     execution_delay_bars: int

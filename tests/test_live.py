@@ -5,18 +5,38 @@ from __future__ import annotations
 from decimal import Decimal
 
 from tml.live.executor import LotFilter, load_env_file, quantize_qty
-from tml.live.tick import decide
+from tml.policy import decide, position_state
 
 
-def test_decide_hysteresis():
+def test_decide_hysteresis_long_only():
     enter, exit_ = 0.5, 0.0
-    assert decide(0.6, False, enter, exit_) == "open"
-    assert decide(0.4, False, enter, exit_) == "hold"  # inside the band: no entry
-    assert decide(0.4, True, enter, exit_) == "hold"  # inside the band: keep holding
-    assert decide(-0.1, True, enter, exit_) == "close"
-    assert decide(-0.1, False, enter, exit_) == "hold"
-    assert decide(0.5, False, enter, exit_) == "hold"  # strict inequality at the edge
-    assert decide(0.0, True, enter, exit_) == "hold"
+    assert decide(0.6, "flat", enter, exit_, False) == "open_long"
+    assert decide(0.4, "flat", enter, exit_, False) == "hold"  # inside the band: no entry
+    assert decide(0.4, "long", enter, exit_, False) == "hold"  # inside the band: keep holding
+    assert decide(-0.1, "long", enter, exit_, False) == "close"
+    assert decide(-0.9, "flat", enter, exit_, False) == "hold"  # shorts disabled
+    assert decide(0.5, "flat", enter, exit_, False) == "hold"  # strict inequality at the edge
+    assert decide(0.0, "long", enter, exit_, False) == "hold"
+
+
+def test_decide_hysteresis_with_shorts():
+    enter, exit_ = 0.5, 0.0
+    assert decide(-0.6, "flat", enter, exit_, True) == "open_short"
+    assert decide(-0.4, "flat", enter, exit_, True) == "hold"
+    assert decide(-0.2, "short", enter, exit_, True) == "hold"  # negative score: stay short
+    assert decide(+0.1, "short", enter, exit_, True) == "close"  # crossed -exit (0.0)
+    assert decide(-0.5, "flat", enter, exit_, True) == "hold"  # strict inequality
+    # long side is unchanged by allow_short
+    assert decide(0.6, "flat", enter, exit_, True) == "open_long"
+    assert decide(-0.1, "long", enter, exit_, True) == "close"
+
+
+def test_position_state():
+    assert position_state(0.0, 100.0, 25.0) == "flat"
+    assert position_state(1.0, 100.0, 25.0) == "long"
+    assert position_state(-1.0, 100.0, 25.0) == "short"
+    assert position_state(0.0001, 100.0, 25.0) == "flat"  # dust
+    assert position_state(-0.0001, 100.0, 25.0) == "flat"  # dust short
 
 
 def test_quantize_rounds_down_to_step():

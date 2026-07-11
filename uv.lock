@@ -1984,6 +1984,7 @@ ensemble = [
     { name = "torch" },
 ]
 live = [
+    { name = "catboost" },
     { name = "pybit" },
 ]
 
@@ -1999,6 +2000,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "catboost", marker = "extra == 'ensemble'", specifier = ">=1.2.10" },
+    { name = "catboost", marker = "extra == 'live'", specifier = ">=1.2.10" },
     { name = "ccxt", specifier = ">=4.5,<5" },
     { name = "lightgbm", specifier = ">=4.6,<5" },
     { name = "matplotlib", specifier = ">=3.9" },
