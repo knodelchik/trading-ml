@@ -39,9 +39,22 @@ def test_spike_visible_exactly_in_forward_window():
 def test_label_end_ts_offset():
     raw = make_raw("AAA/USDT", n=100)
     labels = pair_labels(raw, H, VOL_SPAN, BAR_MS)
-    delta = (labels["label_end_ts"] - labels["ts"]).unique()
+    # gap-free series: the H-th bar ahead closes exactly H hours later;
+    # the last H rows have no future bar -> null label_end_ts
+    delta = (labels["label_end_ts"] - labels["ts"]).drop_nulls().unique()
     assert delta.len() == 1
     assert delta[0] == timedelta(hours=H)
+    assert labels["label_end_ts"].null_count() == H
+
+
+def test_label_end_ts_spans_gaps():
+    raw = make_raw("AAA/USDT", n=100)
+    gapped = pl.concat([raw.slice(0, 50), raw.slice(60, None)])  # 10 missing bars
+    labels = pair_labels(gapped, H, VOL_SPAN, BAR_MS)
+    # for the row right before the gap, the H-th bar ahead lies beyond it:
+    # wall-clock distance must be H + 10 hours, NOT H — purging relies on this
+    row = labels.row(49, named=True)
+    assert row["label_end_ts"] - row["ts"] == timedelta(hours=H + 10)
 
 
 def test_null_pattern_warmup_and_tail():

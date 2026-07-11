@@ -13,7 +13,10 @@ from tml.config import Config
 from tml.data import store
 
 START = datetime(2021, 1, 1, 1, 0, tzinfo=UTC)  # first bar CLOSE time
-N_BARS = 2000
+# 8000 bars -> ~29k OOS rows in the null-label test -> detection floor
+# 2/sqrt(N) ~= 0.012, well below the ~0.03 IC magnitude we defend on real
+# data (2000 bars gave a 0.027 floor — too weak to catch signal-sized leaks)
+N_BARS = 8000
 PAIRS = ("AAA/USDT", "BBB/USDT", "CCC/USDT", "DDD/USDT")
 
 

@@ -43,6 +43,13 @@ def test_null_labels(synth_store):
     assert abs(ic) < bound, (
         f"OOS |IC|={abs(ic):.4f} >= {bound:.4f} on pure-noise labels — structural leakage"
     )
+    # fold-localized leaks can pool away in the global IC — check each fold
+    for (fold_id,), fold_df in oos.group_by("fold_id"):
+        fic = spearman_ic(fold_df["score"].to_numpy(), fold_df["y_true"].to_numpy())
+        fbound = 3 / np.sqrt(fold_df.height)
+        assert abs(fic) < fbound, (
+            f"fold {fold_id}: |IC|={abs(fic):.4f} >= {fbound:.4f} on noise — localized leakage"
+        )
 
 
 def test_future_perturbation_isolation(synth_store):

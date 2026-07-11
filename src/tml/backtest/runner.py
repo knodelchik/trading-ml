@@ -97,6 +97,7 @@ def run_backtest(cfg: Config) -> int:
         notional_per_pair=cfg.backtest.initial_cash_usdt / len(cfg.data.pairs),
         initial_cash=cfg.backtest.initial_cash_usdt,
         fee_rate=(cfg.backtest.taker_fee_bps + cfg.backtest.slippage_bps) / 10_000,
+        execution_delay_bars=cfg.backtest.execution_delay_bars,
     )
     engine.add_strategy(strategy)
     engine.run()
@@ -133,6 +134,7 @@ def run_backtest(cfg: Config) -> int:
             "config_hash": cfg.config_hash(),
             "enter_threshold": cfg.backtest.enter_threshold,
             "exit_threshold": cfg.backtest.exit_threshold,
+            "execution_delay_bars": cfg.backtest.execution_delay_bars,
             # per-24h-period units, comparable with CV trial records
             "sr_per_period": hourly_sr * (24**0.5) if hourly_sr is not None else None,
             "net_total_return_pct": stats["total_return_pct"],
@@ -215,6 +217,7 @@ def _stats(
     final_eq = float(eq[-1])
     return {
         "window": f"{window_start.isoformat()} .. {window_end.isoformat()}",
+        "execution_delay_bars": cfg.backtest.execution_delay_bars,
         "initial_cash_usdt": cfg.backtest.initial_cash_usdt,
         "final_equity_usdt": round(final_eq, 2),
         "total_return_pct": round((final_eq / cfg.backtest.initial_cash_usdt - 1) * 100, 2),

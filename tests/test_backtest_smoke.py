@@ -58,9 +58,11 @@ def test_two_fills_hand_computed_pnl(tmp_path):
     cfg = make_config(tmp_path, pairs=("LTC/USDT",))
     _write_bars(cfg)
 
+    # bypass_logging: the Rust logging subsystem may only be initialized once
+    # per process; a second engine in the same pytest run would abort
     engine = BacktestEngine(
         config=BacktestEngineConfig(
-            trader_id=TraderId("SMOKE-001"), logging=LoggingConfig(log_level="ERROR")
+            trader_id=TraderId("SMOKE-001"), logging=LoggingConfig(bypass_logging=True)
         )
     )
     engine.add_venue(
@@ -114,6 +116,74 @@ def test_two_fills_hand_computed_pnl(tmp_path):
     assert buy["commission_usdt"] == pytest.approx(1.30, abs=0.01)
     assert sell["commission_usdt"] == pytest.approx(1.43, abs=0.01)
     assert final_usdt == pytest.approx(100_097.27, abs=0.05)
+
+
+def test_execution_delay_shifts_fills_one_bar(tmp_path):
+    """With delay=1 the same signals act one bar later:
+    BUY  1000/110 = 9.090909 LTC @ 110 (fee 1000*0.0013 = 1.30)
+    SELL 9.090909 LTC @ 120        (fee 1090.91*0.0013 = 1.42)
+    final = 100000 + 9.090909*(120-110) - 1.30 - 1.42 = 100088.19
+    """
+    from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+    from nautilus_trader.backtest.models import FillModel, MakerTakerFeeModel
+    from nautilus_trader.config import LoggingConfig
+    from nautilus_trader.model.currencies import USDT
+    from nautilus_trader.model.enums import AccountType, OmsType
+    from nautilus_trader.model.identifiers import TraderId, Venue
+    from nautilus_trader.model.objects import Money
+
+    from tml.backtest.data_prep import VENUE_NAME, bars_for_pair, make_instrument
+    from tml.backtest.strategy import SignalStrategy
+
+    cfg = make_config(tmp_path, pairs=("LTC/USDT",))
+    _write_bars(cfg)
+
+    engine = BacktestEngine(
+        config=BacktestEngineConfig(
+            trader_id=TraderId("SMOKE-002"), logging=LoggingConfig(bypass_logging=True)
+        )
+    )
+    engine.add_venue(
+        venue=Venue(VENUE_NAME),
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.CASH,
+        base_currency=None,
+        starting_balances=[Money(100_000, USDT)],
+        fill_model=FillModel(prob_slippage=0.0, random_seed=1),
+        fee_model=MakerTakerFeeModel(),
+    )
+    inst = make_instrument(cfg, "LTC/USDT")
+    engine.add_instrument(inst)
+    engine.add_data(bars_for_pair(cfg, "LTC/USDT", inst, T0, T0 + timedelta(hours=4)))
+
+    ns = lambda dt: int(dt.timestamp() * 1_000_000_000)  # noqa: E731
+    signals = {
+        (f"LTCUSDT.{VENUE_NAME}", ns(T0)): +1.0,
+        (f"LTCUSDT.{VENUE_NAME}", ns(T0 + timedelta(hours=1))): -1.0,
+        (f"LTCUSDT.{VENUE_NAME}", ns(T0 + timedelta(hours=2))): -1.0,
+    }
+    strategy = SignalStrategy(
+        signals=signals,
+        instruments=[inst],
+        timeframe="1h",
+        enter_threshold=0.0,
+        exit_threshold=0.0,
+        notional_per_pair=1000.0,
+        initial_cash=100_000.0,
+        fee_rate=0.0013,
+        execution_delay_bars=1,
+    )
+    engine.add_strategy(strategy)
+    engine.run()
+    account = engine.portfolio.account(Venue(VENUE_NAME))
+    final_usdt = float(account.balance_total(USDT).as_double())
+    engine.dispose()
+
+    assert len(strategy.fills) == 2, strategy.fills
+    buy, sell = strategy.fills
+    assert buy["px"] == pytest.approx(110.0)  # decided at 100-close, filled at NEXT close
+    assert sell["px"] == pytest.approx(120.0)
+    assert final_usdt == pytest.approx(100_088.19, abs=0.05)
 
 
 def test_signal_fold_alignment_guard():

@@ -14,6 +14,8 @@ with hysteresis to keep turnover economically sane on an H-bar-horizon signal:
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
+
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.trading.strategy import Strategy
@@ -33,6 +35,7 @@ class SignalStrategy(Strategy):
         initial_cash: float,
         fee_rate: float,
         min_rebalance_notional: float = 25.0,
+        execution_delay_bars: int = 0,
     ):
         super().__init__()
         self.signals = signals
@@ -41,6 +44,10 @@ class SignalStrategy(Strategy):
         self.enter_threshold = enter_threshold
         self.exit_threshold = exit_threshold
         self.notional = notional_per_pair
+        # decision-to-execution latency: act on the score from `delay` bars
+        # ago, so the fill lands at a later bar's close than the decision bar
+        self.delay = execution_delay_bars
+        self._pending: dict = defaultdict(deque)
         self.min_rebalance_notional = min_rebalance_notional
         self.fee_rate = fee_rate
         # Own cash ledger, updated from fills: a CASH account hard-rejects
@@ -61,6 +68,12 @@ class SignalStrategy(Strategy):
         if score is None:
             self.missing_signals += 1
             return
+        if self.delay > 0:
+            q = self._pending[inst_id]
+            q.append(score)
+            if len(q) <= self.delay:
+                return
+            score = q.popleft()
 
         px = float(bar.close)
         inst = self.cache.instrument(inst_id)

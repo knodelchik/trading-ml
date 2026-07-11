@@ -60,13 +60,12 @@ def fetch_pair(exchange: ccxt.Exchange, cfg: Config, pair: str) -> int:
         page = _fetch_page(exchange, pair, cfg.data.timeframe, since_ms)
         if not page:
             break
+        raw_len = len(page)  # termination must use the UNfiltered length
+        next_since = page[-1][0] + bar_ms
         # guard against exchanges ignoring `since` and looping
-        page = [r for r in page if r[0] >= since_ms]
-        if not page:
-            break
-        rows.extend(page)
-        since_ms = page[-1][0] + bar_ms
-        if len(page) < PAGE_LIMIT:
+        rows.extend(r for r in page if r[0] >= since_ms)
+        since_ms = next_since
+        if raw_len < PAGE_LIMIT:
             break
 
     if not rows:

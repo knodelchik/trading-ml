@@ -124,6 +124,13 @@ class BacktestConfig(_Frozen):
     execution_delay_bars: int
     initial_cash_usdt: float
 
+    @field_validator("execution_delay_bars")
+    @classmethod
+    def _delay_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("execution_delay_bars must be >= 0")
+        return v
+
     @model_validator(mode="after")
     def _hysteresis(self) -> BacktestConfig:
         if self.enter_threshold < self.exit_threshold:

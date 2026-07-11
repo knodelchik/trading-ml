@@ -211,10 +211,29 @@ def build_report(cfg: Config) -> int:
         "",
     ]
     if bt_stats is not None:
+        # the net result is the actual claim — it gets the same PSR/DSR
+        # treatment as the research signal, on the ledger-comparable
+        # stride-H non-overlapping subsample of net equity returns
+        eqdf = pl.read_parquet(store.backtest_dir(cfg) / "equity.parquet")
+        eq_h = eqdf.gather_every(cfg.labels.horizon_bars)["equity"].to_numpy()
+        r_net = np.diff(eq_h) / eq_h[:-1]
+        sr_net = float(np.mean(r_net) / np.std(r_net, ddof=1)) if len(r_net) > 2 else float("nan")
+        skew_n, kurt_n = metrics.moments(r_net)
+        psr_net = metrics.probabilistic_sharpe(sr_net, 0.0, len(r_net), skew_n, kurt_n)
+        dsr_net = metrics.deflated_sharpe(
+            sr_net,
+            TrialsLedger(store.trials_path(cfg)).sharpe_history(),
+            len(r_net),
+            skew_n,
+            kurt_n,
+        )
         lines += [
             "## Backtest (net of costs, nautilus_trader)",
             "",
             *(f"- {k}: {v}" for k, v in bt_stats.items()),
+            f"- PSR vs 0 (net, stride-{cfg.labels.horizon_bars} non-overlapping, n={len(r_net)}): "
+            f"{psr_net:.3f}",
+            f"- **DSR (net): {dsr_net['dsr']:.3f}** over {int(dsr_net['n_trials'])} recorded trial(s)",
             "",
             "![Equity](equity.png)",
             "",

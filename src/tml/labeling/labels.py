@@ -6,15 +6,16 @@ The `shift(-H)` here is the ONLY negative shift permitted in the codebase —
 it defines the prediction target, which is future by definition. The
 volatility scaler uses strictly trailing data through t.
 
-`label_end_ts = ts + H bars` is carried explicitly on every row; the CV
-purge is driven by it, so if the labeling scheme changes (e.g. triple
-barrier in M2, where label end varies per sample), purging stays correct
-with no changes to the splitter.
+`label_end_ts` is carried explicitly on every row as the ACTUAL timestamp
+of the bar H rows ahead (not `ts + H*bar` wall-clock: across exchange
+maintenance gaps the H-th bar closes later than wall-clock arithmetic
+suggests, and purging on the shorter wall-clock end would under-purge near
+gaps). The CV purge is driven by it, so if the labeling scheme changes
+(e.g. triple barrier in M2, where label end varies per sample), purging
+stays correct with no changes to the splitter.
 """
 
 from __future__ import annotations
-
-from datetime import timedelta
 
 import polars as pl
 
@@ -35,7 +36,9 @@ def pair_labels(df: pl.DataFrame, horizon_bars: int, vol_span: int, bar_ms: int)
         "ts",
         "pair",
         y.cast(pl.Float32).alias("y"),
-        (pl.col("ts") + timedelta(milliseconds=bar_ms * horizon_bars)).alias("label_end_ts"),
+        # actual close time of the bar H rows ahead (null for the last H rows,
+        # which carry null y and are excluded downstream anyway)
+        pl.col("ts").shift(-horizon_bars).alias("label_end_ts"),
     )
 
 
