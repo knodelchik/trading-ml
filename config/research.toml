@@ -36,10 +36,10 @@ purge_bars = 24                    # must be >= labels.horizon_bars
 embargo_bars = 24
 
 [model]
-# NOTE: TabPFN weights are licensed NON-COMMERCIAL — fine for research and
-# paper trading; must be dropped (or commercially licensed) before any
-# real-money use. LightGBM/CatBoost carry no such restriction.
-members = ["lgbm", "catboost", "tabpfn"]
+# TabPFN dropped from the traded ensemble: weak on this noise level
+# (OOS IC +0.015, NW t -0.29) and diluted the mean; also NON-COMMERCIAL
+# license. Kept available as a diagnostic member if ever re-enabled.
+members = ["lgbm", "catboost"]
 
 [model.lgbm]
 seed = 42
