@@ -12,9 +12,10 @@ import sys
 from tml.config import load_config
 
 # "tune" is deliberately NOT part of `all`: tuning is an explicit act that
-# adds ledger trials and changes effective parameters
+# adds ledger trials and changes effective parameters. Live commands are
+# likewise explicit-only.
 STAGES = ["ingest", "quality", "features", "labels", "cv", "backtest", "report"]
-EXTRA_COMMANDS = ["tune"]
+EXTRA_COMMANDS = ["tune", "train-live", "tick"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,6 +66,14 @@ def _run_stage(command: str, cfg) -> int:
         from tml.pipeline.tune import run_tune
 
         return run_tune(cfg)
+    if command == "train-live":
+        from tml.live.persist import run_train_live
+
+        return run_train_live(cfg)
+    if command == "tick":
+        from tml.live.tick import run_tick
+
+        return run_tick(cfg)
     if command == "backtest":
         from tml.backtest.runner import run_backtest
 

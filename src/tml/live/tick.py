@@ -1,0 +1,146 @@
+"""One live paper-trading tick: data -> signals -> hysteresis -> Bybit demo.
+
+Designed for an hourly scheduler AND for missed runs: every tick recomputes
+targets from the freshest completed bar and reconciles against the
+exchange's actual positions, so skipped hours self-heal. The orderLinkId
+embeds the bar hour, giving natural idempotency if a tick double-fires.
+
+Decision rule is the SAME hysteresis as the backtest (enter_threshold /
+exit_threshold from [backtest]) applied to the persisted ensemble's score.
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import UTC, datetime, timedelta
+
+from tml.config import Config
+from tml.live import state
+
+
+def decide(score: float, is_long: bool, enter: float, exit_: float) -> str:
+    """-> 'open' | 'close' | 'hold' (pure; unit-tested)."""
+    if not is_long and score > enter:
+        return "open"
+    if is_long and score < exit_:
+        return "close"
+    return "hold"
+
+
+def run_tick(cfg: Config) -> int:
+    from tml.data.funding import run_funding_ingest
+    from tml.data.ingest import run_ingest
+    from tml.live.executor import BybitDemoExecutor
+    from tml.live.signals import latest_scores
+
+    if state.kill_switch_active(cfg):
+        print(f"tick: kill switch present ({state.kill_switch_path(cfg)}) — doing nothing")
+        return 0
+
+    # 1) freshest data (incremental; funding included via run_ingest)
+    rc = run_ingest(cfg)
+    if rc != 0:
+        state.log_error(cfg, {"stage": "ingest", "rc": rc})
+        return rc
+    if not cfg.data.funding:
+        run_funding_ingest(cfg)
+
+    # 2) signals from the latest completed bar
+    scores, latest_ts = latest_scores(cfg)
+    now = datetime.now(UTC)
+    bar = timedelta(milliseconds=cfg.data.bar_ms)
+    if now - latest_ts > 2 * bar:
+        state.log_error(cfg, {"stage": "staleness", "latest_ts": latest_ts.isoformat()})
+        raise RuntimeError(f"latest bar {latest_ts} is more than 2 bars old — refusing to trade")
+
+    # 3) exchange state
+    ex = BybitDemoExecutor(cfg)
+    filters = ex.lot_filters()
+    ex.ensure_leverage_1x()
+    positions = ex.positions()
+    short_positions = {s: q for s, q in positions.items() if q < 0}
+    if short_positions:
+        raise RuntimeError(f"unexpected SHORT positions on the account: {short_positions}")
+
+    # 4) decide + submit
+    hour_tag = latest_ts.strftime("%Y%m%d%H")
+    exposure = sum(
+        abs(q) * float(scores.filter(scores["pair"] == s)["close"][0])
+        for s, q in positions.items()
+        if s in set(scores["pair"].to_list())
+    )
+    submitted: list[tuple[str, str]] = []  # (symbol, order_id)
+    for row in scores.iter_rows(named=True):
+        symbol, px, score = row["pair"], float(row["close"]), float(row["score"])
+        current_qty = positions.get(symbol, 0.0)
+        is_long = current_qty * px >= cfg.live.min_order_notional_usdt
+        action = decide(score, is_long, cfg.backtest.enter_threshold, cfg.backtest.exit_threshold)
+        state.log_decision(
+            cfg,
+            {
+                "bar_ts": latest_ts.isoformat(),
+                "symbol": symbol,
+                "score": score,
+                "close_binance": px,
+                "position_qty": current_qty,
+                "action": action,
+            },
+        )
+        if action == "hold":
+            continue
+        if action == "open":
+            budget = min(
+                cfg.live.notional_per_pair_usdt,
+                max(0.0, cfg.live.max_total_exposure_usdt - exposure),
+            )
+            qty = ex.quantize(symbol, budget / px, filters)
+            if float(qty) * px < cfg.live.min_order_notional_usdt or qty < filters[symbol].min_qty:
+                state.log_error(cfg, {"stage": "sizing", "symbol": symbol, "budget": budget})
+                continue
+            side, reduce_only = "Buy", False
+            exposure += float(qty) * px
+        else:  # close
+            qty = ex.quantize(symbol, abs(current_qty), filters)
+            if qty <= 0:
+                continue
+            side, reduce_only = "Sell", True
+            exposure -= float(qty) * px
+
+        link_id = f"tml-{symbol}-{hour_tag}-{'o' if side == 'Buy' else 'c'}"
+        try:
+            order_id = ex.market_order(symbol, side, qty, link_id, reduce_only)
+            submitted.append((symbol, order_id))
+            state.log_order(
+                cfg,
+                {
+                    "bar_ts": latest_ts.isoformat(),
+                    "symbol": symbol,
+                    "side": side,
+                    "qty": str(qty),
+                    "reduce_only": reduce_only,
+                    "order_link_id": link_id,
+                    "order_id": order_id,
+                },
+            )
+        except Exception as e:  # noqa: BLE001 — journal, continue with other pairs
+            state.log_error(cfg, {"stage": "order", "symbol": symbol, "error": repr(e)})
+            print(f"tick: order failed for {symbol}: {e}")
+
+    # 5) journal fills (market orders settle near-instantly)
+    if submitted:
+        time.sleep(2)
+        for symbol, order_id in submitted:
+            try:
+                for fill in ex.executions_for(symbol, order_id):
+                    state.log_order(cfg, {"fill": fill, "order_id": order_id})
+            except Exception as e:  # noqa: BLE001
+                state.log_error(cfg, {"stage": "fills", "symbol": symbol, "error": repr(e)})
+
+    # 6) equity snapshot
+    eq = ex.equity_usdt()
+    state.log_equity(cfg, {"bar_ts": latest_ts.isoformat(), **eq, "n_orders": len(submitted)})
+    print(
+        f"tick @ {latest_ts:%Y-%m-%d %H:%M} UTC: {len(submitted)} order(s), "
+        f"equity {eq['total_equity']:.2f} USDT"
+    )
+    return 0

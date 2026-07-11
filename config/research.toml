@@ -70,6 +70,13 @@ n_trials = 40
 inner_splits = 3
 inner_train_frac = 0.5
 
+[live]
+# Bybit DEMO paper trading (virtual money, real mainnet prices)
+notional_per_pair_usdt = 10000.0
+model_max_age_days = 90            # mirrors the walk-forward retrain cadence
+min_order_notional_usdt = 25.0
+max_total_exposure_usdt = 100000.0
+
 [backtest]
 # hysteresis: enter only when predicted vol-scaled 24h return clears half a
 # vol unit (expected edge must exceed round-trip cost), exit when it turns

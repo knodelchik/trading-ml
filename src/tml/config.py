@@ -165,6 +165,16 @@ class OptunaConfig(_Frozen):
     inner_train_frac: float = 0.5
 
 
+class LiveConfig(_Frozen):
+    """Bybit DEMO paper trading. Demo-only by construction: the executor
+    hardcodes demo endpoints and refuses to start without demo credentials."""
+
+    notional_per_pair_usdt: float = 10_000.0
+    model_max_age_days: int = 90
+    min_order_notional_usdt: float = 25.0
+    max_total_exposure_usdt: float = 100_000.0  # hard cap, sanity guard
+
+
 class BacktestConfig(_Frozen):
     enter_threshold: float
     exit_threshold: float
@@ -195,6 +205,7 @@ class Config(_Frozen):
     model: ModelConfig
     backtest: BacktestConfig
     optuna: OptunaConfig = OptunaConfig()
+    live: LiveConfig = LiveConfig()
     root: Path
 
     @model_validator(mode="after")
