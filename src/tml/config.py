@@ -28,6 +28,7 @@ class DataConfig(_Frozen):
     timeframe: Literal["1m", "5m", "15m", "1h", "4h", "1d"]
     since: datetime
     pairs: tuple[str, ...]
+    funding: bool = False  # also ingest USDT-perp funding rates for pairs
 
     @field_validator("pairs")
     @classmethod
@@ -119,8 +120,48 @@ class LGBMConfig(_Frozen):
     num_threads: int
 
 
+class CatBoostConfig(_Frozen):
+    seed: int = 42
+    depth: int = 6
+    iterations: int = 500
+    learning_rate: float = 0.05
+    l2_leaf_reg: float = 3.0
+    thread_count: int = 8
+
+
+class TabPFNConfig(_Frozen):
+    seed: int = 42
+    max_train_rows: int = 10_000
+    predict_chunk: int = 2_000
+    device: str = "auto"
+
+
+KNOWN_MEMBERS = ("lgbm", "catboost", "tabpfn")
+
+
 class ModelConfig(_Frozen):
+    members: tuple[str, ...] = ("lgbm",)
     lgbm: LGBMConfig
+    catboost: CatBoostConfig = CatBoostConfig()
+    tabpfn: TabPFNConfig = TabPFNConfig()
+
+    @field_validator("members")
+    @classmethod
+    def _known_members(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("model.members must be non-empty")
+        unknown = set(v) - set(KNOWN_MEMBERS)
+        if unknown:
+            raise ValueError(f"unknown model members {unknown}; known: {KNOWN_MEMBERS}")
+        if len(set(v)) != len(v):
+            raise ValueError("model.members contains duplicates")
+        return v
+
+
+class OptunaConfig(_Frozen):
+    n_trials: int = 40
+    inner_splits: int = 3
+    inner_train_frac: float = 0.5
 
 
 class BacktestConfig(_Frozen):
@@ -152,6 +193,7 @@ class Config(_Frozen):
     cv: CVConfig
     model: ModelConfig
     backtest: BacktestConfig
+    optuna: OptunaConfig = OptunaConfig()
     root: Path
 
     @model_validator(mode="after")

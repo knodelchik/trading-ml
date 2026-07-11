@@ -48,7 +48,7 @@ def make_raw(pair: str, n: int = N_BARS, seed: int | None = None, start: datetim
     )
 
 
-def make_config(root, pairs: tuple[str, ...] = PAIRS) -> Config:
+def make_config(root, pairs: tuple[str, ...] = PAIRS, funding: bool = False) -> Config:
     return Config.model_validate(
         {
             "data": {
@@ -56,6 +56,7 @@ def make_config(root, pairs: tuple[str, ...] = PAIRS) -> Config:
                 "timeframe": "1h",
                 "since": "2021-01-01T00:00:00Z",
                 "pairs": list(pairs),
+                "funding": funding,
             },
             "features": {
                 "ret_horizons": [1, 3, 6],

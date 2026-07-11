@@ -66,6 +66,17 @@ def compute_cv_metrics(cfg: Config) -> dict:
     )
     ic_nw_t = metrics.newey_west_tstat(ic_series, lag=h)
 
+    # per-member diagnostics: which model carries the signal?
+    y_all = oos["y_true"].to_numpy()
+    members = {}
+    for c in [c for c in oos.columns if c.startswith("score_")] + ["score"]:
+        s = oos[c].to_numpy()
+        _, ics = metrics.per_ts_ic(oos["ts"].to_numpy(), s, y_all)
+        members[c.removeprefix("score_") if c != "score" else "ensemble(mean)"] = {
+            "pooled_ic": metrics.spearman_ic(s, y_all),
+            "nw_tstat": metrics.newey_west_tstat(ics, lag=h),
+        }
+
     port = portfolio_returns(oos)
     # non-overlapping subsample for distribution-sensitive stats
     port_no = port.gather_every(h)["r"].to_numpy()
@@ -92,6 +103,7 @@ def compute_cv_metrics(cfg: Config) -> dict:
         "pooled_ic": pooled_ic,
         "per_ts_ic_mean": float(np.nanmean(ic_series)) if len(ic_series) else float("nan"),
         "ic_newey_west_tstat_lag_h": ic_nw_t,
+        "members": members,
         "per_fold": per_fold,
         "signal_portfolio": {
             "note": (
@@ -199,6 +211,15 @@ def build_report(cfg: Config) -> int:
         f"- pooled Spearman IC: **{cvm['pooled_ic']:+.4f}**",
         f"- mean per-timestamp cross-sectional IC: {cvm['per_ts_ic_mean']:+.4f}",
         f"- Newey-West t-stat (lag = H = {cfg.labels.horizon_bars}): **{cvm['ic_newey_west_tstat_lag_h']:.2f}**",
+        "",
+        "### Per-model diagnostics",
+        "",
+        "| model | pooled IC | NW t-stat |",
+        "|---|---|---|",
+        *(
+            f"| {name} | {m['pooled_ic']:+.4f} | {m['nw_tstat']:.2f} |"
+            for name, m in cvm["members"].items()
+        ),
         "",
         "| fold | period | n | IC | hit rate | decile spread |",
         "|---|---|---|---|---|---|",

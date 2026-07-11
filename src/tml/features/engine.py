@@ -102,6 +102,10 @@ def build_features(cfg: Config) -> pl.DataFrame:
         raw = store.scan_raw(cfg, pair).collect()
         frames.append(pair_features(raw, cfg.features))
     all_pairs = pl.concat(frames, how="vertical").sort("ts", "pair")
+    if cfg.data.funding:
+        from tml.features.funding import add_funding_features
+
+        all_pairs = add_funding_features(all_pairs, cfg)
     return add_cs_ranks(all_pairs, list(cfg.features.cs_rank_cols))
 
 

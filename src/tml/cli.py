@@ -11,14 +11,17 @@ import sys
 
 from tml.config import load_config
 
+# "tune" is deliberately NOT part of `all`: tuning is an explicit act that
+# adds ledger trials and changes effective parameters
 STAGES = ["ingest", "quality", "features", "labels", "cv", "backtest", "report"]
+EXTRA_COMMANDS = ["tune"]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tml", description="ML trading research pipeline")
     parser.add_argument("--config", default="config/research.toml", help="path to research.toml")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in [*STAGES, "all"]:
+    for name in [*STAGES, *EXTRA_COMMANDS, "all"]:
         sub.add_parser(name, help=f"run the {name} stage" if name != "all" else "run every stage in order")
     args = parser.parse_args(argv)
 
@@ -36,7 +39,12 @@ def _run_stage(command: str, cfg) -> int:
     if command == "ingest":
         from tml.data.ingest import run_ingest
 
-        return run_ingest(cfg)
+        rc = run_ingest(cfg)
+        if rc == 0 and cfg.data.funding:
+            from tml.data.funding import run_funding_ingest
+
+            rc = run_funding_ingest(cfg)
+        return rc
     if command == "quality":
         from tml.data.quality import run_quality
 
@@ -53,6 +61,10 @@ def _run_stage(command: str, cfg) -> int:
         from tml.pipeline.research import run_cv
 
         return run_cv(cfg)
+    if command == "tune":
+        from tml.pipeline.tune import run_tune
+
+        return run_tune(cfg)
     if command == "backtest":
         from tml.backtest.runner import run_backtest
 
