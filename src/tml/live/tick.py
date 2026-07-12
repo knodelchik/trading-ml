@@ -37,8 +37,13 @@ def run_tick(cfg: Config) -> int:
     if not cfg.data.funding:
         run_funding_ingest(cfg)
 
-    # 2) signals from the latest completed bar
-    scores, latest_ts = latest_scores(cfg)
+    # 2) signals from the latest completed bar (journal failures: a bricked
+    # model load must leave a trail, not just a dead systemd unit)
+    try:
+        scores, latest_ts = latest_scores(cfg)
+    except Exception as e:
+        state.log_error(cfg, {"stage": "signals", "error": repr(e)})
+        raise
     now = datetime.now(UTC)
     bar = timedelta(milliseconds=cfg.data.bar_ms)
     if now - latest_ts > 2 * bar:

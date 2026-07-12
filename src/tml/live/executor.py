@@ -108,13 +108,29 @@ class BybitDemoExecutor:
                     raise
 
     def positions(self) -> dict[str, float]:
-        """symbol -> signed base qty (one-way mode; short should never occur)."""
-        resp = self.session.get_positions(category="linear", settleCoin="USDT")
+        """symbol -> signed base qty (one-way mode).
+
+        MUST paginate: /v5/position/list defaults to 20 per page, and with a
+        22-pair universe >20 open positions is an expected state — a
+        truncated read makes a live position look flat and the tick would
+        double-open it. Terminate on a short page (the demo API can return
+        a non-empty cursor even when complete).
+        """
         out: dict[str, float] = {}
-        for p in resp["result"]["list"]:
-            size = float(p["size"] or 0)
-            if size:
-                out[p["symbol"]] = size if p["side"] == "Buy" else -size
+        cursor = ""
+        while True:
+            kwargs = {"category": "linear", "settleCoin": "USDT", "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = self.session.get_positions(**kwargs)["result"]
+            page = result["list"]
+            for p in page:
+                size = float(p["size"] or 0)
+                if size:
+                    out[p["symbol"]] = size if p["side"] == "Buy" else -size
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor or len(page) < 200:
+                break
         return out
 
     def equity_usdt(self) -> dict[str, float]:

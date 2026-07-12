@@ -279,8 +279,11 @@ def build_report(cfg: Config) -> int:
     lines += [
         "## Disclosures",
         "",
-        "- Survivorship bias: pairs were selected in 2026 among still-major names listed "
-        "on Binance before Sep 2020; results would differ over delisted names.",
+        "- Survivorship/selection bias: the universe was fixed in July 2026 (criteria: "
+        "Binance listing <= 2021-06 AND Bybit-linear liquidity as of 2026-07). This "
+        "hindsight conditioning admits long-decay boom-bust names that a momentum model "
+        "shorts profitably; treat headline results as an upper bound and compare against "
+        "the original-10 sensitivity run. A point-in-time universe is future work.",
         "- Labels overlap (H bars); IC significance uses Newey-West, PSR/DSR use "
         "non-overlapping subsampling.",
         _trials_disclosure(cfg),
