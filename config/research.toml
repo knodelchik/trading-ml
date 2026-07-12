@@ -78,6 +78,15 @@ n_trials = 40
 inner_splits = 3
 inner_train_frac = 0.5
 
+[universe]
+# point-in-time monthly top-N by trailing liquidity (see tml/universe.py);
+# when enabled, cfg.data.pairs is ignored in favor of membership
+enabled = true
+size = 30
+ranking_window_days = 90
+min_history_days = 180
+max_gap_days = 3
+
 [live]
 # Bybit DEMO paper trading (virtual money, real mainnet prices)
 # mirrors backtest sizing: initial_cash / n_pairs (100k / 22)

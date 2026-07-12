@@ -265,9 +265,11 @@ class Config(_Frozen):
 
     def model_hash(self) -> str:
         """Hash of the sections that determine what a trained model IS
-        (data/features/labels/model). Execution/backtest/live settings do
-        not invalidate persisted models."""
-        payload = self.model_dump(mode="json", include={"data", "features", "labels", "model"})
+        (data/features/labels/model/universe). Execution/backtest/live
+        settings do not invalidate persisted models."""
+        payload = self.model_dump(
+            mode="json", include={"data", "features", "labels", "model", "universe"}
+        )
         canon = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canon.encode()).hexdigest()[:16]
 

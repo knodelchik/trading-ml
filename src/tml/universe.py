@@ -76,15 +76,30 @@ def discover_symbols() -> list[str]:
     return sorted(set(out))
 
 
-def _fetch_symbol_daily(symbol: str, months: list[str]) -> pl.DataFrame | None:
-    frames = []
-    for month in months:
+def _fetch_symbol_daily(cfg: Config, symbol: str, months: list[str]) -> pl.DataFrame | None:
+    """Per-symbol daily series with an on-disk cache: a crashed bulk build
+    resumes instead of restarting 40k downloads."""
+    cache = universe_dir(cfg) / "daily_cache" / f"{symbol}.parquet"
+    if cache.exists():
+        cached = pl.read_parquet(cache)
+        have = set(cached["ts"].dt.strftime("%Y-%m").unique().to_list())
+        # last cached month may be partial — always refetch it and current
+        refetch = sorted({m for m in months if m not in have} | set(sorted(have)[-1:]))
+    else:
+        cached = None
+        refetch = months
+    frames = [] if cached is None else [cached.filter(~pl.col("ts").dt.strftime("%Y-%m").is_in(refetch))]
+    for month in refetch:
         df = archives.fetch_spot_klines_month(symbol, "1d", month)
         if df is not None:
             frames.append(df.select("ts", "close", "quote_volume", "pair"))
+    frames = [f for f in frames if f.height]
     if not frames:
         return None
-    return pl.concat(frames)
+    out = pl.concat(frames).unique(subset="ts").sort("ts")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    out.write_parquet(cache)
+    return out
 
 
 def build_daily(cfg: Config, symbols: list[str]) -> pl.DataFrame:
@@ -94,7 +109,7 @@ def build_daily(cfg: Config, symbols: list[str]) -> pl.DataFrame:
     frames: list[pl.DataFrame] = []
     done = 0
     with ThreadPoolExecutor(max_workers=16) as pool:
-        futures = {pool.submit(_fetch_symbol_daily, s, months): s for s in symbols}
+        futures = {pool.submit(_fetch_symbol_daily, cfg, s, months): s for s in symbols}
         for fut in as_completed(futures):
             df = fut.result()
             done += 1

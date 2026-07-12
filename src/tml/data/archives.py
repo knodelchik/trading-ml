@@ -48,7 +48,9 @@ def _get(url: str, retries: int = 4) -> bytes | None:
                 return None
             if attempt == retries - 1:
                 raise
-        except urllib.error.URLError:
+        except (urllib.error.URLError, OSError, TimeoutError):
+            # ConnectionResetError etc. — inevitable across tens of
+            # thousands of requests; retry with backoff
             if attempt == retries - 1:
                 raise
         time.sleep(delay)
