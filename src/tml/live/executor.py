@@ -43,6 +43,22 @@ class LotFilter:
     qty_step: Decimal
     min_qty: Decimal
     min_notional: Decimal
+    tick_size: Decimal
+
+
+def _snap(value: Decimal, step: Decimal, rounding: str) -> Decimal:
+    """Snap to a multiple of `step` via division — Decimal.quantize() snaps
+    to the step's EXPONENT, which is wrong for grids like '0.10' or '10'."""
+    return (value / step).to_integral_value(rounding=rounding) * step
+
+
+def quantize_price(px: float, side: str, f: LotFilter) -> Decimal:
+    """Snap a maker limit price to the tick grid, staying passive:
+    buys round DOWN, sells round UP."""
+    from decimal import ROUND_CEILING
+
+    rounding = ROUND_DOWN if side == "Buy" else ROUND_CEILING
+    return _snap(Decimal(str(px)), f.tick_size, rounding)
 
 
 def quantize_qty(qty: float, f: LotFilter) -> Decimal:
@@ -51,7 +67,7 @@ def quantize_qty(qty: float, f: LotFilter) -> Decimal:
     Decimal end-to-end: str(float) artifacts like 0.30000000000000004 get
     rejected by the exchange.
     """
-    q = Decimal(str(qty)).quantize(f.qty_step, rounding=ROUND_DOWN)
+    q = _snap(Decimal(str(qty)), f.qty_step, ROUND_DOWN)
     return q if q >= f.min_qty else Decimal(0)
 
 
@@ -89,6 +105,7 @@ class BybitDemoExecutor:
                     qty_step=Decimal(f["qtyStep"]),
                     min_qty=Decimal(f["minOrderQty"]),
                     min_notional=Decimal(f.get("minNotionalValue", "5")),
+                    tick_size=Decimal(items[0]["priceFilter"]["tickSize"]),
                 )
         missing = {pair_key(p) for p in self.cfg.data.pairs} - set(out)
         if missing:
@@ -157,6 +174,58 @@ class BybitDemoExecutor:
             reduceOnly=reduce_only,
         )
         return resp["result"]["orderId"]
+
+    def limit_post_only(
+        self, symbol: str, side: str, qty: Decimal, price: Decimal, link_id: str, reduce_only: bool
+    ) -> str:
+        """Maker order. NOTE: a PostOnly that would cross is NOT rejected at
+        the API level — it returns retCode 0 and gets cancelled async with
+        rejectReason=EC_PostOnlyWillTakeLiquidity; the next tick detects the
+        vanished order and re-decides."""
+        resp = self.session.place_order(
+            category="linear",
+            symbol=symbol,
+            side=side,
+            orderType="Limit",
+            qty=str(qty),
+            price=str(price),
+            timeInForce="PostOnly",
+            orderLinkId=link_id[:36],
+            reduceOnly=reduce_only,
+        )
+        return resp["result"]["orderId"]
+
+    def open_orders(self) -> list[dict]:
+        """All our resting orders (paginated; page cap is 50)."""
+        out: list[dict] = []
+        cursor = ""
+        while True:
+            kwargs = {"category": "linear", "settleCoin": "USDT", "limit": 50, "openOnly": 0}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = self.session.get_open_orders(**kwargs)["result"]
+            page = result["list"]
+            out.extend(
+                {
+                    "symbol": o["symbol"],
+                    "order_id": o["orderId"],
+                    "order_link_id": o.get("orderLinkId", ""),
+                    "side": o["side"],
+                    "qty": float(o["qty"]),
+                    "cum_exec_qty": float(o.get("cumExecQty") or 0),
+                    "price": float(o["price"]),
+                    "reduce_only": bool(o.get("reduceOnly")),
+                    "created_ms": int(o["createdTime"]),
+                }
+                for o in page
+            )
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor or len(page) < 50:
+                break
+        return out
+
+    def cancel(self, symbol: str, order_id: str) -> None:
+        self.session.cancel_order(category="linear", symbol=symbol, orderId=order_id)
 
     def executions_for(self, symbol: str, order_id: str) -> list[dict]:
         resp = self.session.get_executions(category="linear", symbol=symbol, orderId=order_id)

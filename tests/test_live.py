@@ -40,15 +40,36 @@ def test_position_state():
 
 
 def test_quantize_rounds_down_to_step():
-    btc = LotFilter(qty_step=Decimal("0.001"), min_qty=Decimal("0.001"), min_notional=Decimal(5))
+    btc = LotFilter(
+        qty_step=Decimal("0.001"), min_qty=Decimal("0.001"), min_notional=Decimal(5),
+        tick_size=Decimal("0.10"),
+    )
     assert quantize_qty(0.0834567, btc) == Decimal("0.083")
     # integer steps (ADA/DOGE): whole coins only
-    doge = LotFilter(qty_step=Decimal("1"), min_qty=Decimal("1"), min_notional=Decimal(5))
+    doge = LotFilter(
+        qty_step=Decimal("1"), min_qty=Decimal("1"), min_notional=Decimal(5),
+        tick_size=Decimal("0.00001"),
+    )
     assert quantize_qty(15789.73, doge) == Decimal("15789")
     # below min lot -> zero (no order), never rounded up
     assert quantize_qty(0.0004, btc) == Decimal(0)
     # float artifact safety
-    assert str(quantize_qty(0.1 + 0.2, LotFilter(Decimal("0.1"), Decimal("0.1"), Decimal(5)))) == "0.3"
+    assert str(
+        quantize_qty(0.1 + 0.2, LotFilter(Decimal("0.1"), Decimal("0.1"), Decimal(5), Decimal("0.01")))
+    ) == "0.3"
+
+
+def test_quantize_price_stays_passive():
+    from tml.live.executor import quantize_price
+
+    btc = LotFilter(
+        qty_step=Decimal("0.001"), min_qty=Decimal("0.001"), min_notional=Decimal(5),
+        tick_size=Decimal("0.10"),
+    )
+    # buys round DOWN to the grid, sells round UP — never crossing closer
+    assert quantize_price(64049.67, "Buy", btc) == Decimal("64049.6")
+    assert quantize_price(64049.61, "Sell", btc) == Decimal("64049.7")
+    assert quantize_price(64049.60, "Buy", btc) == Decimal("64049.6")  # already on grid
 
 
 def test_order_link_id_fits_36_chars():

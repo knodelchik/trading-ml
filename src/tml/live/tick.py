@@ -59,6 +59,39 @@ def run_tick(cfg: Config) -> int:
     filters = ex.lot_filters()
     ex.ensure_leverage_1x()
     positions = ex.positions()
+
+    # 3a) manage maker limits resting from previous ticks: cancel after TTL
+    # and fall back to market for the unfilled remainder; symbols with a
+    # resting order are excluded from this tick's decisions (backtest parity)
+    suppressed: set[str] = set()
+    bar_ms = cfg.data.bar_ms
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    for o in ex.open_orders():
+        if not o["order_link_id"].startswith("tml-"):
+            continue  # not ours — leave alone
+        suppressed.add(o["symbol"])
+        age_bars = (now_ms - o["created_ms"]) / bar_ms
+        if age_bars < cfg.execution.limit_ttl_bars:
+            continue
+        try:
+            ex.cancel(o["symbol"], o["order_id"])
+            remaining = ex.quantize(o["symbol"], o["qty"] - o["cum_exec_qty"], filters)
+            state.log_order(
+                cfg,
+                {"ttl_cancel": o["order_link_id"], "remaining": str(remaining), "age_bars": round(age_bars, 2)},
+            )
+            if float(remaining) > 0:
+                fb_link = f"{o['order_link_id'][:33]}-f"
+                order_id = ex.market_order(
+                    o["symbol"], o["side"], remaining, fb_link, o["reduce_only"]
+                )
+                state.log_order(
+                    cfg,
+                    {"fallback_market": fb_link, "symbol": o["symbol"], "side": o["side"],
+                     "qty": str(remaining), "order_id": order_id},
+                )
+        except Exception as e:  # noqa: BLE001
+            state.log_error(cfg, {"stage": "ttl_manage", "symbol": o["symbol"], "error": repr(e)})
     if not cfg.backtest.allow_short:
         short_positions = {s: q for s, q in positions.items() if q < 0}
         if short_positions:
@@ -75,6 +108,13 @@ def run_tick(cfg: Config) -> int:
     tg_lines: list[str] = []
     for row in scores.iter_rows(named=True):
         symbol, px, score = row["pair"], float(row["close"]), float(row["score"])
+        if symbol in suppressed:
+            state.log_decision(
+                cfg,
+                {"bar_ts": latest_ts.isoformat(), "symbol": symbol, "score": score,
+                 "action": "suppressed_working_order"},
+            )
+            continue
         current_qty = positions.get(symbol, 0.0)
         pos_state = position_state(current_qty, px, cfg.live.min_order_notional_usdt)
         action = decide(
@@ -120,7 +160,15 @@ def run_tick(cfg: Config) -> int:
 
         link_id = f"tml-{symbol}-{hour_tag}-{'o' if side == 'Buy' else 'c'}"
         try:
-            order_id = ex.market_order(symbol, side, qty, link_id, reduce_only)
+            if cfg.execution.mode == "maker":
+                from tml.live.executor import quantize_price
+
+                f = filters[symbol]
+                raw_px = px - float(f.tick_size) if side == "Buy" else px + float(f.tick_size)
+                limit_px = quantize_price(raw_px, side, f)
+                order_id = ex.limit_post_only(symbol, side, qty, limit_px, link_id, reduce_only)
+            else:
+                order_id = ex.market_order(symbol, side, qty, link_id, reduce_only)
             submitted.append((symbol, order_id))
             human = {
                 "open_long": "🟢 відкрив ЛОНГ",
