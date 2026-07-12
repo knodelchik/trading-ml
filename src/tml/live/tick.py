@@ -167,13 +167,17 @@ def run_tick(cfg: Config) -> int:
             + "\n".join(tg_lines)
             + f"\n💰 еквіті: {eq['total_equity']:,.0f} USDT"
         )
-    elif latest_ts.hour == 6:
-        n_open = len(ex.positions())
-        notify.send(
-            f"🌅 <b>tml щоденний звіт</b>\n"
-            f"💰 еквіті: {eq['total_equity']:,.0f} USDT\n"
-            f"📊 відкритих позицій: {n_open} з {len(cfg.data.pairs)} пар"
-        )
+    else:
+        from zoneinfo import ZoneInfo
+
+        # daily digest on the 10:00 Kyiv bar (DST-proof)
+        if latest_ts.astimezone(ZoneInfo("Europe/Kyiv")).hour == 10:
+            n_open = len(ex.positions())
+            notify.send(
+                f"🌅 <b>tml щоденний звіт</b>\n"
+                f"💰 еквіті: {eq['total_equity']:,.0f} USDT\n"
+                f"📊 відкритих позицій: {n_open} з {len(cfg.data.pairs)} пар"
+            )
 
     print(
         f"tick @ {latest_ts:%Y-%m-%d %H:%M} UTC: {len(submitted)} order(s), "
