@@ -22,8 +22,11 @@ from tml.policy import decide, position_state
 def run_tick(cfg: Config) -> int:
     from tml.data.funding import run_funding_ingest
     from tml.data.ingest import run_ingest
-    from tml.live.executor import BybitDemoExecutor
+    from tml.live import notify
+    from tml.live.executor import BybitDemoExecutor, load_env_file
     from tml.live.signals import latest_scores
+
+    load_env_file(cfg.root)  # telegram creds may be needed before the executor exists
 
     if state.kill_switch_active(cfg):
         print(f"tick: kill switch present ({state.kill_switch_path(cfg)}) — doing nothing")
@@ -43,6 +46,7 @@ def run_tick(cfg: Config) -> int:
         scores, latest_ts = latest_scores(cfg)
     except Exception as e:
         state.log_error(cfg, {"stage": "signals", "error": repr(e)})
+        notify.send(f"🚨 <b>tml tick впав</b> на етапі сигналів:\n<code>{e!r}</code>")
         raise
     now = datetime.now(UTC)
     bar = timedelta(milliseconds=cfg.data.bar_ms)
@@ -68,6 +72,7 @@ def run_tick(cfg: Config) -> int:
         if s in set(scores["pair"].to_list())
     )
     submitted: list[tuple[str, str]] = []  # (symbol, order_id)
+    tg_lines: list[str] = []
     for row in scores.iter_rows(named=True):
         symbol, px, score = row["pair"], float(row["close"]), float(row["score"])
         current_qty = positions.get(symbol, 0.0)
@@ -117,6 +122,14 @@ def run_tick(cfg: Config) -> int:
         try:
             order_id = ex.market_order(symbol, side, qty, link_id, reduce_only)
             submitted.append((symbol, order_id))
+            human = {
+                "open_long": "🟢 відкрив ЛОНГ",
+                "open_short": "🔴 відкрив ШОРТ",
+                "close": "⚪ закрив " + ("лонг" if pos_state == "long" else "шорт"),
+            }[action]
+            tg_lines.append(
+                f"{human} <b>{symbol}</b>: {qty} @ ~{px:g} (~{float(qty) * px:,.0f} USDT, скор {score:+.2f})"
+            )
             state.log_order(
                 cfg,
                 {
@@ -146,6 +159,22 @@ def run_tick(cfg: Config) -> int:
     # 6) equity snapshot
     eq = ex.equity_usdt()
     state.log_equity(cfg, {"bar_ts": latest_ts.isoformat(), **eq, "n_orders": len(submitted)})
+
+    # 7) telegram: every trade immediately; daily digest at 06:00 UTC (09:00 Київ)
+    if tg_lines:
+        notify.send(
+            "🤖 <b>tml</b> @ " + latest_ts.strftime("%H:%M UTC") + "\n"
+            + "\n".join(tg_lines)
+            + f"\n💰 еквіті: {eq['total_equity']:,.0f} USDT"
+        )
+    elif latest_ts.hour == 6:
+        n_open = len(ex.positions())
+        notify.send(
+            f"🌅 <b>tml щоденний звіт</b>\n"
+            f"💰 еквіті: {eq['total_equity']:,.0f} USDT\n"
+            f"📊 відкритих позицій: {n_open} з {len(cfg.data.pairs)} пар"
+        )
+
     print(
         f"tick @ {latest_ts:%Y-%m-%d %H:%M} UTC: {len(submitted)} order(s), "
         f"equity {eq['total_equity']:.2f} USDT"
