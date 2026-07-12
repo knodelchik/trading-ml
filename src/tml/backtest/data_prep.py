@@ -3,9 +3,10 @@
 Cost model note: nautilus's FillModel slippage is exactly one price tick,
 which is not bps-controllable, so we set prob_slippage=0 and bake the
 configured slippage into the instrument's taker fee instead:
-    effective_taker = (taker_fee_bps + slippage_bps) / 1e4
-MakerTakerFeeModel charges notional * taker_fee on market-order fills, so
-this yields exact, deterministic bps-level costs. stats.json discloses it.
+    taker_fee = (execution.taker_fee_bps + execution.slippage_bps) / 1e4
+    maker_fee = execution.maker_fee_bps / 1e4   (passive fills don't slip)
+MakerTakerFeeModel stamps the fee by each fill's liquidity side, so maker
+and taker costs are exact and deterministic. stats.json discloses both.
 """
 
 from __future__ import annotations
@@ -39,7 +40,8 @@ def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
     """
     key = store.pair_key(pair)  # e.g. BTCUSDT
     base = pair.split("/")[0]
-    effective_taker = Decimal(cfg.backtest.taker_fee_bps + cfg.backtest.slippage_bps) / Decimal(10_000)
+    effective_taker = Decimal(cfg.execution.taker_fee_bps + cfg.execution.slippage_bps) / Decimal(10_000)
+    maker = Decimal(cfg.execution.maker_fee_bps) / Decimal(10_000)
     return CryptoPerpetual(
         instrument_id=InstrumentId(Symbol(key), Venue(VENUE_NAME)),
         raw_symbol=Symbol(key),
@@ -61,8 +63,8 @@ def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
         min_price=Price(10**-PRICE_PRECISION, precision=PRICE_PRECISION),
         margin_init=Decimal(0),  # engine skips margin risk checks anyway; blow-up guard is ours
         margin_maint=Decimal(0),
-        maker_fee=effective_taker,  # we only send market orders; keep symmetric
-        taker_fee=effective_taker,
+        maker_fee=maker,  # passive limit fills (no slippage by construction)
+        taker_fee=effective_taker,  # market fills: taker rate + slippage baked in
     )
 
 

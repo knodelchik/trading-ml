@@ -73,8 +73,10 @@ def run_backtest(cfg: Config) -> int:
         base_currency=USDT,  # single-currency USDT margin account
         starting_balances=[Money(cfg.backtest.initial_cash_usdt, USDT)],
         default_leverage=Decimal(1),  # MUST be explicit: MARGIN default is 10x
-        fill_model=FillModel(prob_slippage=0.0, random_seed=cfg.model.lgbm.seed),
-        fee_model=MakerTakerFeeModel(),  # reads effective taker (incl. slippage bps) off instruments
+        # prob_fill_on_limit=0: resting limits fill only when price trades
+        # strictly THROUGH them (never on a touch) — conservative maker model
+        fill_model=FillModel(prob_slippage=0.0, prob_fill_on_limit=0.0, random_seed=cfg.model.lgbm.seed),
+        fee_model=MakerTakerFeeModel(),  # stamps maker/taker fee per fill's liquidity side
     )
 
     instruments = []
@@ -98,7 +100,7 @@ def run_backtest(cfg: Config) -> int:
         exit_threshold=cfg.backtest.exit_threshold,
         notional_per_pair=cfg.backtest.initial_cash_usdt / len(cfg.data.pairs),
         initial_cash=cfg.backtest.initial_cash_usdt,
-        fee_rate=(cfg.backtest.taker_fee_bps + cfg.backtest.slippage_bps) / 10_000,
+        execution=cfg.execution,
         execution_delay_bars=cfg.backtest.execution_delay_bars,
         allow_short=cfg.backtest.allow_short,
     )
@@ -115,7 +117,8 @@ def run_backtest(cfg: Config) -> int:
     fills = pl.DataFrame(
         strategy.fills,
         schema={"ts": pl.Int64, "instrument": pl.String, "side": pl.String,
-                "qty": pl.Float64, "px": pl.Float64, "commission_usdt": pl.Float64},
+                "qty": pl.Float64, "px": pl.Float64, "commission_usdt": pl.Float64,
+                "liquidity": pl.String},
     )
     account = engine.portfolio.account(Venue(VENUE_NAME))
     engine_final_usdt = float(account.balance_total(USDT).as_double())
@@ -155,7 +158,7 @@ def run_backtest(cfg: Config) -> int:
 
 
 def _replay_missed_fills(engine, strategy) -> None:
-    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.enums import LiquiditySide, OrderSide
     from nautilus_trader.model.events import OrderFilled
 
     seen = {
@@ -174,6 +177,7 @@ def _replay_missed_fills(engine, strategy) -> None:
                 "qty": float(ev.last_qty),
                 "px": float(ev.last_px),
                 "commission_usdt": float(ev.commission.as_double()) if ev.commission else 0.0,
+                "liquidity": "MAKER" if ev.liquidity_side == LiquiditySide.MAKER else "TAKER",
             }
             qty_f, px_f = float(ev.last_qty), float(ev.last_px)
             key = (rec["ts"], rec["instrument"], side, round(qty_f, 9), round(px_f, 9))
@@ -276,13 +280,22 @@ def _stats(
 
     gross_traded = float((fills["qty"] * fills["px"]).sum())
     total_fees = float(fills["commission_usdt"].sum())
-    fee_rate = (cfg.backtest.taker_fee_bps + cfg.backtest.slippage_bps) / 10_000
-    fee_check = abs(total_fees - gross_traded * fee_rate) / max(total_fees, 1e-9)
+    taker_rate = (cfg.execution.taker_fee_bps + cfg.execution.slippage_bps) / 10_000
+    maker_rate = cfg.execution.maker_fee_bps / 10_000
+    expected_fees = float(
+        fills.with_columns(
+            expected=pl.col("qty")
+            * pl.col("px")
+            * pl.when(pl.col("liquidity") == "MAKER").then(maker_rate).otherwise(taker_rate)
+        )["expected"].sum()
+    )
+    fee_check = abs(total_fees - expected_fees) / max(total_fees, 1e-9)
     if fee_check > 0.01:
         raise RuntimeError(
             f"fee sanity check failed: journal fees {total_fees:.2f} vs "
-            f"turnover*rate {gross_traded * fee_rate:.2f}"
+            f"per-liquidity expectation {expected_fees:.2f}"
         )
+    maker_share = float((fills["liquidity"] == "MAKER").cast(pl.Float64).mean() or 0.0)
     # engine's final cash must match our reconstruction once flat at end;
     # a large mismatch means the engine halted mid-run (e.g. negative
     # balance) or fills were lost — the run is not trustworthy
@@ -311,7 +324,12 @@ def _stats(
         "total_costs_usdt": round(total_fees, 2),
         "funding_net_usdt": round(float(equity["funding_cum"][-1]), 2),
         "allow_short": cfg.backtest.allow_short,
-        "cost_model": f"taker {cfg.backtest.taker_fee_bps}bps + slippage {cfg.backtest.slippage_bps}bps baked into fee",
+        "execution_mode": cfg.execution.mode,
+        "maker_fill_share": round(maker_share, 4),
+        "cost_model": (
+            f"maker {cfg.execution.maker_fee_bps}bps / taker {cfg.execution.taker_fee_bps}bps "
+            f"+ slippage {cfg.execution.slippage_bps}bps on taker fills"
+        ),
         "missing_signal_bars": missing_signals,
         "engine_vs_journal_cash_mismatch_frac": round(cash_mismatch, 6),
         "hours": int(ts.len()),

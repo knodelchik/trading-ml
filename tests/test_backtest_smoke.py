@@ -19,6 +19,7 @@ import polars as pl
 import pytest
 
 from tests.conftest import make_config
+from tml.config import ExecutionConfig
 from tml.data import store
 from tml.validation.splits import Fold
 
@@ -96,7 +97,7 @@ def test_two_fills_hand_computed_pnl(tmp_path):
         exit_threshold=0.0,
         notional_per_pair=1000.0,
         initial_cash=100_000.0,
-        fee_rate=0.0013,
+        execution=ExecutionConfig(taker_fee_bps=10.0, slippage_bps=3.0),
     )
     engine.add_strategy(strategy)
     engine.run()
@@ -173,7 +174,7 @@ def test_execution_delay_shifts_fills_one_bar(tmp_path):
         exit_threshold=0.0,
         notional_per_pair=1000.0,
         initial_cash=100_000.0,
-        fee_rate=0.0013,
+        execution=ExecutionConfig(taker_fee_bps=10.0, slippage_bps=3.0),
         execution_delay_bars=1,
     )
     engine.add_strategy(strategy)
@@ -241,7 +242,7 @@ def test_on_stop_close_is_journaled(tmp_path):
         exit_threshold=0.0,
         notional_per_pair=1000.0,
         initial_cash=100_000.0,
-        fee_rate=0.0013,
+        execution=ExecutionConfig(taker_fee_bps=10.0, slippage_bps=3.0),
     )
     engine.add_strategy(strategy)
     engine.run()
@@ -317,7 +318,7 @@ def test_short_round_trip_hand_computed(tmp_path):
         exit_threshold=0.0,
         notional_per_pair=1000.0,
         initial_cash=100_000.0,
-        fee_rate=0.0013,
+        execution=ExecutionConfig(taker_fee_bps=10.0, slippage_bps=3.0),
         allow_short=True,
     )
     engine.add_strategy(strategy)
@@ -332,6 +333,126 @@ def test_short_round_trip_hand_computed(tmp_path):
     assert buy["side"] == "BUY" and buy["px"] == pytest.approx(110.0)
     assert sell["qty"] == pytest.approx(10.0) and buy["qty"] == pytest.approx(10.0)
     assert final_usdt == pytest.approx(99_897.27, abs=0.05)
+
+
+def _maker_engine(cfg, closes_ohlc):
+    from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+    from nautilus_trader.backtest.models import FillModel, MakerTakerFeeModel
+    from nautilus_trader.config import LoggingConfig
+    from nautilus_trader.model.currencies import USDT
+    from nautilus_trader.model.enums import AccountType, OmsType
+    from nautilus_trader.model.identifiers import TraderId, Venue
+    from nautilus_trader.model.objects import Money
+
+    from tml.backtest.data_prep import VENUE_NAME, bars_for_pair, make_instrument
+
+    df = pl.DataFrame(
+        {
+            "ts": [T0 + timedelta(hours=i) for i in range(len(closes_ohlc))],
+            "open": [r[0] for r in closes_ohlc],
+            "high": [r[1] for r in closes_ohlc],
+            "low": [r[2] for r in closes_ohlc],
+            "close": [r[3] for r in closes_ohlc],
+            "volume": [10_000.0] * len(closes_ohlc),
+            "pair": "LTCUSDT",
+        },
+        schema_overrides={"ts": pl.Datetime("us", "UTC")},
+    )
+    store.write_raw_year(cfg, "LTC/USDT", 2021, df)
+    engine = BacktestEngine(
+        config=BacktestEngineConfig(
+            trader_id=TraderId("SMOKE-MKR"), logging=LoggingConfig(bypass_logging=True)
+        )
+    )
+    engine.add_venue(
+        venue=Venue(VENUE_NAME),
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.MARGIN,
+        base_currency=USDT,
+        default_leverage=Decimal(1),
+        starting_balances=[Money(100_000, USDT)],
+        fill_model=FillModel(prob_slippage=0.0, prob_fill_on_limit=0.0, random_seed=1),
+        fee_model=MakerTakerFeeModel(),
+    )
+    inst = make_instrument(cfg, "LTC/USDT")
+    engine.add_instrument(inst)
+    engine.add_data(bars_for_pair(cfg, "LTC/USDT", inst, T0, T0 + timedelta(hours=10)))
+    return engine, inst
+
+
+def test_maker_fill_when_price_trades_through(tmp_path):
+    """Post-only BUY at (100 - tick); next bar's low=95 trades THROUGH it:
+    fill at the limit price as MAKER, fee = 1000 * 0.0002 = 0.20."""
+
+    from tml.backtest.data_prep import VENUE_NAME
+    from tml.backtest.strategy import SignalStrategy
+
+    cfg = make_config(tmp_path, pairs=("LTC/USDT",))
+    bars = [(100, 100, 100, 100), (100, 100, 95, 98), (98, 98, 98, 98)]
+    engine, inst = _maker_engine(cfg, bars)
+
+    ns = lambda dt: int(dt.timestamp() * 1_000_000_000)  # noqa: E731
+    signals = {(f"LTCUSDT.{VENUE_NAME}", ns(T0 + timedelta(hours=i))): s for i, s in enumerate([+1.0, +0.5, +0.5])}
+    strategy = SignalStrategy(
+        signals=signals,
+        instruments=[inst],
+        timeframe="1h",
+        enter_threshold=0.0,
+        exit_threshold=0.0,
+        notional_per_pair=1000.0,
+        initial_cash=100_000.0,
+        execution=ExecutionConfig(mode="maker", maker_fee_bps=2.0, taker_fee_bps=10.0, slippage_bps=3.0, limit_ttl_bars=2),
+    )
+    engine.add_strategy(strategy)
+    engine.run()
+    from tml.backtest.runner import _replay_missed_fills
+
+    _replay_missed_fills(engine, strategy)  # on_stop fills execute after the strategy stops
+    engine.dispose()
+
+    buys = [f for f in strategy.fills if f["side"] == "BUY"]
+    assert len(buys) == 1, strategy.fills
+    assert buys[0]["liquidity"] == "MAKER"
+    assert buys[0]["px"] == pytest.approx(100.0, abs=1e-3)  # fills AT the limit, not at the low
+    assert buys[0]["qty"] == pytest.approx(10.0)
+    assert buys[0]["commission_usdt"] == pytest.approx(0.20, abs=0.01)
+    # on_stop closes the long with a market order = TAKER at 13 bps
+    sells = [f for f in strategy.fills if f["side"] == "SELL"]
+    assert len(sells) == 1 and sells[0]["liquidity"] == "TAKER"
+    assert sells[0]["commission_usdt"] == pytest.approx(10 * 98 * 0.0013, abs=0.01)
+
+
+def test_maker_ttl_falls_back_to_market(tmp_path):
+    """Flat rising bars never touch the BUY limit below close: after
+    limit_ttl_bars=2 the strategy cancels and市 buys at market as TAKER."""
+    from tml.backtest.data_prep import VENUE_NAME
+    from tml.backtest.strategy import SignalStrategy
+
+    cfg = make_config(tmp_path, pairs=("LTC/USDT",))
+    bars = [(100, 100, 100, 100), (110, 110, 110, 110), (120, 120, 120, 120), (120, 120, 120, 120)]
+    engine, inst = _maker_engine(cfg, bars)
+
+    ns = lambda dt: int(dt.timestamp() * 1_000_000_000)  # noqa: E731
+    signals = {(f"LTCUSDT.{VENUE_NAME}", ns(T0 + timedelta(hours=i))): +1.0 for i in range(4)}
+    strategy = SignalStrategy(
+        signals=signals,
+        instruments=[inst],
+        timeframe="1h",
+        enter_threshold=0.0,
+        exit_threshold=0.0,
+        notional_per_pair=1000.0,
+        initial_cash=100_000.0,
+        execution=ExecutionConfig(mode="maker", maker_fee_bps=2.0, taker_fee_bps=10.0, slippage_bps=3.0, limit_ttl_bars=2),
+    )
+    engine.add_strategy(strategy)
+    engine.run()
+    engine.dispose()
+
+    buys = [f for f in strategy.fills if f["side"] == "BUY"]
+    assert len(buys) == 1, strategy.fills
+    assert buys[0]["liquidity"] == "TAKER"  # TTL expired -> market fallback
+    assert buys[0]["px"] == pytest.approx(120.0, abs=1e-3)
+    assert buys[0]["commission_usdt"] == pytest.approx(10 * 120 * 0.0013, rel=0.02)
 
 
 def test_signal_fold_alignment_guard():

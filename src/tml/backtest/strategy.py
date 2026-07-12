@@ -1,13 +1,17 @@
-"""Signal-following strategy: long/flat per pair, fixed per-pair notional.
+"""Signal-following strategy: long/flat/short via the shared tml.policy.
 
-The strategy consumes ONLY the precomputed OOS predictions from the CV stage
-(injected as a dict); it never sees a model. The alignment of signals with
-CV test folds is asserted by the runner before the engine starts, and the
-strategy fail-fasts on any signal timestamp it was not given.
+Execution styles (cfg.execution.mode):
+  * "taker" — market order at the decision bar's close (M1-M4 baseline).
+  * "maker" — post-only GTC limit one tick inside the close (below for
+    buys, above for sells); if unfilled after limit_ttl_bars, cancel and
+    fall back to a market order for the remainder. While a limit works,
+    new decisions for that instrument are suppressed (mirrors live flow).
 
-Decision rule at bar close t (score known at t, fill at t's close + costs):
-the shared symmetric hysteresis from tml.policy — the SAME function the live
-tick executes, so research and production cannot diverge.
+Conservative maker modeling relies on the runner passing
+FillModel(prob_fill_on_limit=0.0): a resting limit fills only when price
+trades strictly THROUGH it, never on a touch, and always at the limit
+price (no improvement). Fees are stamped per fill by liquidity side
+(instrument.maker_fee / taker_fee) by the engine's MakerTakerFeeModel.
 """
 
 from __future__ import annotations
@@ -15,10 +19,11 @@ from __future__ import annotations
 from collections import defaultdict, deque
 
 from nautilus_trader.model.data import Bar
-from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.enums import LiquiditySide, OrderSide, TimeInForce
 from nautilus_trader.trading.strategy import Strategy
 
 from tml.backtest.data_prep import bar_type_for
+from tml.config import ExecutionConfig
 from tml.policy import decide, position_state
 
 
@@ -32,7 +37,7 @@ class SignalStrategy(Strategy):
         exit_threshold: float,
         notional_per_pair: float,
         initial_cash: float,
-        fee_rate: float,
+        execution: ExecutionConfig,
         min_rebalance_notional: float = 25.0,
         execution_delay_bars: int = 0,
         allow_short: bool = False,
@@ -45,16 +50,14 @@ class SignalStrategy(Strategy):
         self.exit_threshold = exit_threshold
         self.allow_short = allow_short
         self.notional = notional_per_pair
-        # decision-to-execution latency: act on the score from `delay` bars
-        # ago, so the fill lands at a later bar's close than the decision bar
+        self.min_rebalance_notional = min_rebalance_notional
+        self.exec = execution
+        # worst-case (taker) rate for the cash cushion on entries
+        self.fee_rate = (execution.taker_fee_bps + execution.slippage_bps) / 10_000
         self.delay = execution_delay_bars
         self._pending: dict = defaultdict(deque)
-        self.min_rebalance_notional = min_rebalance_notional
-        self.fee_rate = fee_rate
-        # Own cash ledger, updated from fills: a CASH account hard-rejects
-        # (and nautilus HALTS the whole run on) any buy that would overdraw,
-        # so buys are capped to available cash minus a fee cushion — exactly
-        # what a live bot must do.
+        # instrument_id -> {"cid": ClientOrderId, "bars": int, "side": OrderSide}
+        self._working: dict = {}
         self._cash = initial_cash
         self.fills: list[dict] = []
         self.missing_signals = 0
@@ -76,6 +79,11 @@ class SignalStrategy(Strategy):
                 return
             score = q.popleft()
 
+        # manage a working limit order first: while it rests, no new decisions
+        if inst_id in self._working:
+            self._manage_working(inst_id)
+            return
+
         px = float(bar.close)
         inst = self.cache.instrument(inst_id)
         current_qty = float(self.portfolio.net_position(inst_id) or 0.0)
@@ -85,7 +93,6 @@ class SignalStrategy(Strategy):
             return
 
         if action == "open_long":
-            # cap the buy to available cash net of a fee cushion
             headroom = self._cash / (1 + 2 * self.fee_rate) - self.min_rebalance_notional
             affordable = max(0.0, min(self.notional, headroom))
             if affordable < self.min_rebalance_notional:
@@ -101,18 +108,61 @@ class SignalStrategy(Strategy):
         qty = inst.make_qty(qty_f)
         if qty.as_double() <= 0:
             return
-        order = self.order_factory.market(
-            instrument_id=inst_id,
-            order_side=side,
-            quantity=qty,
-            time_in_force=TimeInForce.GTC,
-        )
-        self.submit_order(order)
+
+        if self.exec.mode == "maker":
+            tick = inst.price_increment
+            # one tick inside the close: at the close itself the book sits
+            # exactly there and a post-only would be rejected as crossing
+            raw_px = bar.close - tick if side == OrderSide.BUY else bar.close + tick
+            order = self.order_factory.limit(
+                instrument_id=inst_id,
+                order_side=side,
+                quantity=qty,
+                price=inst.make_price(raw_px),
+                time_in_force=TimeInForce.GTC,
+                post_only=True,
+            )
+            self._working[inst_id] = {"cid": order.client_order_id, "bars": 0, "side": side}
+            self.submit_order(order)
+        else:
+            self.submit_order(
+                self.order_factory.market(
+                    instrument_id=inst_id, order_side=side, quantity=qty, time_in_force=TimeInForce.GTC
+                )
+            )
+
+    def _manage_working(self, inst_id) -> None:
+        w = self._working[inst_id]
+        order = self.cache.order(w["cid"])
+        if order is None or order.is_closed:
+            del self._working[inst_id]
+            return
+        w["bars"] += 1
+        if w["bars"] < self.exec.limit_ttl_bars:
+            return
+        remaining = order.leaves_qty
+        self.cancel_order(order)
+        del self._working[inst_id]
+        if remaining.as_double() > 0:
+            self.submit_order(
+                self.order_factory.market(
+                    instrument_id=inst_id,
+                    order_side=w["side"],
+                    quantity=remaining,
+                    time_in_force=TimeInForce.GTC,
+                )
+            )
+
+    def on_order_rejected(self, event) -> None:
+        # post-only that would cross gets rejected; drop the working slot so
+        # the next bar can decide afresh
+        for inst_id, w in list(self._working.items()):
+            if w["cid"] == event.client_order_id:
+                del self._working[inst_id]
 
     def on_order_filled(self, event) -> None:
-        # Own journal of fills — used for the cash ledger and equity
-        # reconstruction so we don't depend on report-API details; it is
-        # cross-checked against the engine's final account balance.
+        # Own journal of fills — cash ledger + equity reconstruction + the
+        # engine-balance cross-check all build on it.
         is_buy = event.order_side == OrderSide.BUY
         qty = float(event.last_qty)
         px = float(event.last_px)
@@ -126,9 +176,15 @@ class SignalStrategy(Strategy):
                 "qty": qty,
                 "px": px,
                 "commission_usdt": fee,
+                "liquidity": "MAKER" if event.liquidity_side == LiquiditySide.MAKER else "TAKER",
             }
         )
 
     def on_stop(self) -> None:
+        for inst_id in list(self._working):
+            order = self.cache.order(self._working[inst_id]["cid"])
+            if order is not None and order.is_open:
+                self.cancel_order(order)
+        self._working.clear()
         for inst in self._instruments:
             self.close_all_positions(inst.id)

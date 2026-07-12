@@ -90,10 +90,15 @@ def make_config(root, pairs: tuple[str, ...] = PAIRS, funding: bool = False) -> 
             "backtest": {
                 "enter_threshold": 0.0,
                 "exit_threshold": 0.0,
-                "taker_fee_bps": 10.0,
-                "slippage_bps": 3.0,
                 "execution_delay_bars": 0,
                 "initial_cash_usdt": 100000.0,
+            },
+            "execution": {
+                "mode": "taker",
+                "maker_fee_bps": 2.0,
+                "taker_fee_bps": 10.0,
+                "slippage_bps": 3.0,
+                "limit_ttl_bars": 2,
             },
             "root": str(root),
         }

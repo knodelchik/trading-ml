@@ -175,12 +175,34 @@ class LiveConfig(_Frozen):
     max_total_exposure_usdt: float = 100_000.0  # hard cap, sanity guard
 
 
+class ExecutionConfig(_Frozen):
+    """Order execution style, shared by backtest and live.
+
+    mode="taker": market orders, taker_fee + slippage on every fill (the
+    conservative M1-M4 baseline). mode="maker": post a limit at decision
+    price, wait up to limit_ttl_bars, fall back to market — maker fills pay
+    maker_fee with no slippage. Baseline taker rates stay deliberately
+    conservative so maker-mode gains come from execution style alone.
+    """
+
+    mode: Literal["taker", "maker"] = "taker"
+    maker_fee_bps: float = 2.0
+    taker_fee_bps: float = 10.0
+    slippage_bps: float = 3.0
+    limit_ttl_bars: int = 2
+
+    @field_validator("limit_ttl_bars")
+    @classmethod
+    def _ttl_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("limit_ttl_bars must be >= 1")
+        return v
+
+
 class BacktestConfig(_Frozen):
     enter_threshold: float
     exit_threshold: float
     allow_short: bool = False
-    taker_fee_bps: float
-    slippage_bps: float
     execution_delay_bars: int
     initial_cash_usdt: float
 
@@ -205,6 +227,7 @@ class Config(_Frozen):
     cv: CVConfig
     model: ModelConfig
     backtest: BacktestConfig
+    execution: ExecutionConfig = ExecutionConfig()
     optuna: OptunaConfig = OptunaConfig()
     live: LiveConfig = LiveConfig()
     root: Path
