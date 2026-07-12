@@ -55,7 +55,7 @@ def run_train_live(cfg: Config) -> int:
         "trained_at": datetime.now(UTC).isoformat(),
         "members": list(cfg.model.members),
         "feature_cols": cols,
-        "config_hash": cfg.config_hash(),
+        "model_hash": cfg.model_hash(),
         "params_hash": params_hash(cfg, lgbm_params),
         "lgbm_overrides": lgbm_params or {},
         "train_rows": int(len(x)),
@@ -81,10 +81,11 @@ def load_models(cfg: Config) -> tuple[dict, dict]:
             f"live models are {age_days:.0f} days old (> {cfg.live.model_max_age_days}) — "
             "rerun `tml train-live` (retraining cadence mirrors the walk-forward step)"
         )
-    if meta["config_hash"] != cfg.config_hash():
+    if meta.get("model_hash") != cfg.model_hash():
         raise RuntimeError(
-            "config changed since models were trained "
-            f"({meta['config_hash']} != {cfg.config_hash()}) — rerun `tml train-live`"
+            "model-relevant config (data/features/labels/model) changed since "
+            f"models were trained ({meta.get('model_hash')} != {cfg.model_hash()}) — "
+            "rerun `tml train-live`"
         )
     models = {name: joblib.load(models_dir(cfg) / f"{name}.joblib") for name in meta["members"]}
     return models, meta

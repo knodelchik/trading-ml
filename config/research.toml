@@ -100,7 +100,7 @@ initial_cash_usdt = 100000.0
 # "taker" = market orders (M1-M4 baseline); "maker" = post-only limit one
 # tick inside the close, market fallback after limit_ttl_bars. Taker rates
 # stay deliberately conservative so maker-mode gains come from style alone.
-mode = "taker"
+mode = "maker"
 maker_fee_bps = 2.0
 taker_fee_bps = 10.0
 slippage_bps = 3.0                 # taker fills only; passive fills don't slip
