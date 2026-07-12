@@ -295,7 +295,9 @@ def _stats(
             f"fee sanity check failed: journal fees {total_fees:.2f} vs "
             f"per-liquidity expectation {expected_fees:.2f}"
         )
-    maker_share = float((fills["liquidity"] == "MAKER").cast(pl.Float64).mean() or 0.0)
+    maker_share = float(
+        fills.select((pl.col("liquidity") == "MAKER").cast(pl.Float64).mean()).item() or 0.0
+    )
     # engine's final cash must match our reconstruction once flat at end;
     # a large mismatch means the engine halted mid-run (e.g. negative
     # balance) or fills were lost — the run is not trustworthy
