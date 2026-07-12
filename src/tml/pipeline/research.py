@@ -63,9 +63,12 @@ def params_hash(cfg: Config, lgbm_params: dict | None) -> str:
 
 
 def dataset(cfg: Config) -> pl.DataFrame:
+    from tml.universe import membership_filter
+
     feats = pl.read_parquet(store.features_path(cfg))
     labels = pl.read_parquet(store.labels_path(cfg))
     df = feats.join(labels, on=["ts", "pair"], how="inner", validate="1:1")
+    df = membership_filter(cfg, df)  # point-in-time universe (no-op when off)
     return df.filter(pl.col("y").is_not_null()).sort("ts", "pair")
 
 

@@ -98,7 +98,9 @@ def pair_features(df: pl.DataFrame, fc: FeaturesConfig) -> pl.DataFrame:
 def build_features(cfg: Config) -> pl.DataFrame:
     """Per-pair causal features, then per-timestamp cross-sectional ranks."""
     frames = []
-    for pair in cfg.data.pairs:
+    from tml.universe import pairs_for
+
+    for pair in pairs_for(cfg):
         raw = store.scan_raw(cfg, pair).collect()
         frames.append(pair_features(raw, cfg.features))
     all_pairs = pl.concat(frames, how="vertical").sort("ts", "pair")

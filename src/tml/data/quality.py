@@ -107,7 +107,9 @@ def check_pair(cfg: Config, pair: str) -> PairQuality:
 
 
 def run_quality(cfg: Config) -> int:
-    reports = [check_pair(cfg, pair) for pair in cfg.data.pairs]
+    from tml.universe import pairs_for
+
+    reports = [check_pair(cfg, pair) for pair in pairs_for(cfg)]
     out = {
         "generated_at": datetime.now(UTC).isoformat(),
         "hard_fail": any(r.hard_fail for r in reports),

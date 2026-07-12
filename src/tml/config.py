@@ -165,6 +165,17 @@ class OptunaConfig(_Frozen):
     inner_train_frac: float = 0.5
 
 
+class UniverseConfig(_Frozen):
+    """Point-in-time universe (M5.2). When enabled, pair membership is
+    decided monthly from trailing liquidity instead of cfg.data.pairs."""
+
+    enabled: bool = False
+    size: int = 30
+    ranking_window_days: int = 90
+    min_history_days: int = 180
+    max_gap_days: int = 3
+
+
 class LiveConfig(_Frozen):
     """Bybit DEMO paper trading. Demo-only by construction: the executor
     hardcodes demo endpoints and refuses to start without demo credentials."""
@@ -229,6 +240,7 @@ class Config(_Frozen):
     backtest: BacktestConfig
     execution: ExecutionConfig = ExecutionConfig()
     optuna: OptunaConfig = OptunaConfig()
+    universe: UniverseConfig = UniverseConfig()
     live: LiveConfig = LiveConfig()
     root: Path
 

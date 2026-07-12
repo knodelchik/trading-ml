@@ -117,10 +117,12 @@ def run_ingest(cfg: Config) -> int:
     exchange_cls = getattr(ccxt, cfg.data.exchange)
     exchange = exchange_cls({"enableRateLimit": True})
     total = 0
-    for pair in cfg.data.pairs:
+    from tml.universe import pairs_for
+
+    for pair in pairs_for(cfg):
         t0 = time.time()
         n = fetch_pair(exchange, cfg, pair)
         total += n
         print(f"{pair}: +{n} bars in {time.time() - t0:.1f}s")
-    print(f"ingest done: {total} new bars across {len(cfg.data.pairs)} pairs")
+    print(f"ingest done: {total} new bars across {len(pairs_for(cfg))} pairs")
     return 0

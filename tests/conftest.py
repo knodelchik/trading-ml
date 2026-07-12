@@ -48,9 +48,12 @@ def make_raw(pair: str, n: int = N_BARS, seed: int | None = None, start: datetim
     )
 
 
-def make_config(root, pairs: tuple[str, ...] = PAIRS, funding: bool = False) -> Config:
+def make_config(
+    root, pairs: tuple[str, ...] = PAIRS, funding: bool = False, universe: dict | None = None
+) -> Config:
     return Config.model_validate(
         {
+            **({"universe": universe} if universe else {}),
             "data": {
                 "exchange": "binance",
                 "timeframe": "1h",

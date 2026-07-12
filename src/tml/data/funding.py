@@ -106,8 +106,16 @@ def fetch_funding_pair(exchange, cfg: Config, pair: str) -> int:
 def run_funding_ingest(cfg: Config) -> int:
     exchange = ccxt.binanceusdm({"enableRateLimit": True})
     total = 0
-    for pair in cfg.data.pairs:
-        n = fetch_funding_pair(exchange, cfg, pair)
+    from tml.universe import pairs_for
+
+    for pair in pairs_for(cfg):
+        try:
+            n = fetch_funding_pair(exchange, cfg, pair)
+        except ccxt.BadSymbol:
+            # delisted perp (e.g. old LUNA): no live endpoint; funding
+            # features fall back to fund_known=0 for such pairs
+            print(f"funding {pair}: perp not listed — skipped (features 0-fill)")
+            continue
         total += n
         print(f"funding {pair}: +{n} settlements")
     print(f"funding ingest done: {total} new settlement records")

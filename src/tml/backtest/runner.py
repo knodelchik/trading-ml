@@ -92,6 +92,22 @@ def run_backtest(cfg: Config) -> int:
         (f"{row['pair']}.{VENUE_NAME}", int(row["ts_ns"])): float(row["score"])
         for row in oos.with_columns(ts_ns=pl.col("ts").dt.epoch(time_unit="ns")).iter_rows(named=True)
     }
+
+    # point-in-time universe: a pair's membership can end mid-backtest —
+    # flatten at its last in-universe bar instead of freezing the position
+    force_close: set[tuple[str, int]] = set()
+    if cfg.universe.enabled:
+        bar_dur = pl.duration(milliseconds=cfg.data.bar_ms)
+        exits = (
+            oos.sort("pair", "ts")
+            .with_columns(next_ts=pl.col("ts").shift(-1).over("pair"))
+            .filter(pl.col("next_ts").is_null() | (pl.col("next_ts") > pl.col("ts") + bar_dur))
+            .with_columns(ts_ns=pl.col("ts").dt.epoch(time_unit="ns"))
+        )
+        force_close = {
+            (f"{r['pair']}.{VENUE_NAME}", int(r["ts_ns"])) for r in exits.iter_rows(named=True)
+        }
+        print(f"backtest: {len(force_close)} membership-exit points enforce flattening")
     strategy = SignalStrategy(
         signals=signals,
         instruments=instruments,
@@ -103,6 +119,7 @@ def run_backtest(cfg: Config) -> int:
         execution=cfg.execution,
         execution_delay_bars=cfg.backtest.execution_delay_bars,
         allow_short=cfg.backtest.allow_short,
+        force_close=force_close,
     )
     engine.add_strategy(strategy)
     engine.run()

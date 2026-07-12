@@ -41,6 +41,7 @@ class SignalStrategy(Strategy):
         min_rebalance_notional: float = 25.0,
         execution_delay_bars: int = 0,
         allow_short: bool = False,
+        force_close: set[tuple[str, int]] | None = None,
     ):
         super().__init__()
         self.signals = signals
@@ -59,6 +60,10 @@ class SignalStrategy(Strategy):
         # instrument_id -> {"cid": ClientOrderId, "bars": int, "side": OrderSide}
         self._working: dict = {}
         self._cash = initial_cash
+        # (instrument_id str, ts_ns) marks a pair's LAST in-universe bar:
+        # flatten there with a market order (delisting/membership exit is
+        # not a moment to be posting passive limits)
+        self.force_close = force_close or set()
         self.fills: list[dict] = []
         self.missing_signals = 0
 
@@ -68,6 +73,9 @@ class SignalStrategy(Strategy):
 
     def on_bar(self, bar: Bar) -> None:
         inst_id = bar.bar_type.instrument_id
+        if (str(inst_id), int(bar.ts_event)) in self.force_close:
+            self._flatten_at_market(inst_id, float(bar.close))
+            return
         score = self.signals.get((str(inst_id), int(bar.ts_event)))
         if score is None:
             self.missing_signals += 1
@@ -130,6 +138,28 @@ class SignalStrategy(Strategy):
                     instrument_id=inst_id, order_side=side, quantity=qty, time_in_force=TimeInForce.GTC
                 )
             )
+
+    def _flatten_at_market(self, inst_id, px: float) -> None:
+        if inst_id in self._working:
+            order = self.cache.order(self._working[inst_id]["cid"])
+            if order is not None and order.is_open:
+                self.cancel_order(order)
+            del self._working[inst_id]
+        current_qty = float(self.portfolio.net_position(inst_id) or 0.0)
+        if abs(current_qty) * px < self.min_rebalance_notional:
+            return
+        inst = self.cache.instrument(inst_id)
+        qty = inst.make_qty(abs(current_qty))
+        if qty.as_double() <= 0:
+            return
+        self.submit_order(
+            self.order_factory.market(
+                instrument_id=inst_id,
+                order_side=OrderSide.SELL if current_qty > 0 else OrderSide.BUY,
+                quantity=qty,
+                time_in_force=TimeInForce.GTC,
+            )
+        )
 
     def _manage_working(self, inst_id) -> None:
         w = self._working[inst_id]

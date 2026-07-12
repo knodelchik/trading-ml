@@ -21,6 +21,7 @@ import polars as pl
 
 from tml.config import Config
 from tml.data import store
+from tml.universe import pairs_for
 
 
 def pair_labels(df: pl.DataFrame, horizon_bars: int, vol_span: int, bar_ms: int) -> pl.DataFrame:
@@ -50,7 +51,7 @@ def build_labels(cfg: Config) -> pl.DataFrame:
             cfg.labels.vol_span,
             cfg.data.bar_ms,
         )
-        for pair in cfg.data.pairs
+        for pair in pairs_for(cfg)
     ]
     return pl.concat(frames, how="vertical").sort("ts", "pair")
 
@@ -58,7 +59,7 @@ def build_labels(cfg: Config) -> pl.DataFrame:
 def run_labels(cfg: Config) -> int:
     df = build_labels(cfg)
     n_null = int(df["y"].null_count())
-    expected_nulls = (cfg.labels.horizon_bars + cfg.labels.vol_span) * len(cfg.data.pairs)
+    expected_nulls = (cfg.labels.horizon_bars + cfg.labels.vol_span) * len(pairs_for(cfg))
     if n_null != expected_nulls:
         raise RuntimeError(
             f"unexpected null label count {n_null} (expected exactly {expected_nulls}: "
