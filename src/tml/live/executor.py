@@ -95,10 +95,20 @@ class BybitDemoExecutor:
     def lot_filters(self, pairs: list[str], require_all: bool = True) -> dict[str, LotFilter]:
         # per-symbol queries: the unfiltered instruments list is PAGINATED
         # and silently drops symbols beyond the first page
+        from pybit.exceptions import InvalidRequestError
+
         out: dict[str, LotFilter] = {}
         for pair in pairs:
             symbol = pair_key(pair)
-            items = self.session.get_instruments_info(category="linear", symbol=symbol)["result"]["list"]
+            try:
+                items = self.session.get_instruments_info(category="linear", symbol=symbol)[
+                    "result"
+                ]["list"]
+            except InvalidRequestError:
+                # symbol invalid on Bybit (e.g. PEPE trades as 1000PEPEUSDT
+                # with a 1000x multiplier — a contract mismatch we don't
+                # trade); treat as not-tradable and skip
+                continue
             if items and items[0].get("status") == "Trading":
                 f = items[0]["lotSizeFilter"]
                 out[symbol] = LotFilter(
