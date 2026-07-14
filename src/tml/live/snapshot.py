@@ -102,9 +102,7 @@ def compute_snapshot(cfg: Config, ex=None) -> dict:
     # captures trips opened before the local journal started
     if ex is not None:
         try:
-            span_ms = 14 * 86_400_000
-            start = (fills[0]["ts_ms"] if fills else int(datetime.now(UTC).timestamp() * 1000)) - span_ms
-            closed = ex.closed_pnl_since(start)
+            closed = ex.recent_closed_pnl(days=7)
             trades = [
                 {
                     "execKey": c["order_id"],

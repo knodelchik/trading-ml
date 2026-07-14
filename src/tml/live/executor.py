@@ -244,14 +244,24 @@ class BybitDemoExecutor:
         t = self.session.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
         return float(t["bid1Price"]), float(t["ask1Price"])
 
-    def closed_pnl_since(self, start_ms: int) -> list[dict]:
-        """Closed round trips from Bybit (authoritative realized P&L per
-        position close — captures trips opened before our local journal
-        existed). Paginated."""
+    def recent_closed_pnl(self, days: int = 7) -> list[dict]:
+        """Closed round trips from Bybit over the last `days` (authoritative
+        realized P&L; captures trips opened before our local journal existed).
+        Bybit requires startTime AND endTime together, window <= 7 days."""
+        import time
+
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - min(days, 7) * 86_400_000
         out: list[dict] = []
         cursor = ""
         while True:
-            kwargs = {"category": "linear", "settleCoin": "USDT", "startTime": start_ms, "limit": 100}
+            kwargs = {
+                "category": "linear",
+                "settleCoin": "USDT",
+                "startTime": start_ms,
+                "endTime": now_ms,
+                "limit": 100,
+            }
             if cursor:
                 kwargs["cursor"] = cursor
             result = self.session.get_closed_pnl(**kwargs)["result"]
