@@ -23,7 +23,22 @@ def _cents(usdt: float) -> int:
     return round(usdt * 100)
 
 
-def compute_snapshot(cfg: Config) -> dict:
+def _positions_detail(ex) -> list[dict]:
+    resp = ex.session.get_positions(category="linear", settleCoin="USDT")
+    out = []
+    for p in resp["result"]["list"]:
+        size = float(p["size"] or 0)
+        if size:
+            signed = size if p["side"] == "Buy" else -size
+            out.append({"symbol": p["symbol"], "size": signed, "value": float(p.get("positionValue") or 0)})
+    return out
+
+
+def compute_snapshot(cfg: Config, ex=None) -> dict:
+    """Build the dashboard payload. When `ex` (a BybitDemoExecutor) is given,
+    closed trades + realized P&L come from Bybit's authoritative closed-PnL
+    (captures round trips opened before the local journal existed); the
+    equity curve, maker share and fees still come from the local journal."""
     fills_path = journal_dir(cfg) / "fills.jsonl"
     fills = (
         [json.loads(line) for line in fills_path.open() if line.strip()]
@@ -77,14 +92,46 @@ def compute_snapshot(cfg: Config) -> dict:
                 }
             )
 
-    realized = sum(t["pnlCents"] for t in trades)
-    n_trades = len(trades)
-    wins = sum(1 for t in trades if t["pnlCents"] > 0)
     open_positions = [
         {"symbol": sym, "qty": round(v["qty"], 6), "notionalCents": _cents(abs(v["qty"]) * v["last_px"])}
         for sym, v in pos.items()
         if abs(v["qty"]) > 1e-9
     ]
+
+    # authoritative closed trades from Bybit when we have an executor —
+    # captures trips opened before the local journal started
+    if ex is not None:
+        try:
+            span_ms = 14 * 86_400_000
+            start = (fills[0]["ts_ms"] if fills else int(datetime.now(UTC).timestamp() * 1000)) - span_ms
+            closed = ex.closed_pnl_since(start)
+            trades = [
+                {
+                    "execKey": c["order_id"],
+                    "symbol": c["symbol"],
+                    "side": c["side"],
+                    "openTs": datetime.fromtimestamp(c["open_ms"] / 1000, UTC).isoformat(),
+                    "closeTs": datetime.fromtimestamp(c["close_ms"] / 1000, UTC).isoformat(),
+                    "pnlCents": _cents(c["closed_pnl"]),
+                    "feesCents": 0,
+                    "isMaker": False,
+                }
+                for c in closed
+            ]
+            open_positions = [
+                {
+                    "symbol": p["symbol"],
+                    "qty": round(p["size"], 6),
+                    "notionalCents": _cents(p["value"]),
+                }
+                for p in _positions_detail(ex)
+            ]
+        except Exception:  # noqa: BLE001 — fall back to journal reconstruction
+            pass
+
+    realized = sum(t["pnlCents"] for t in trades)
+    n_trades = len(trades)
+    wins = sum(1 for t in trades if t["pnlCents"] > 0)
     span_days = (fills[-1]["ts_ms"] - fills[0]["ts_ms"]) / 86_400_000 if len(fills) > 1 else 0.0
 
     # backtest reference from stats.json
@@ -123,9 +170,15 @@ def push_snapshot(cfg: Config) -> bool:
     try:
         import urllib.request
 
+        from tml.live.executor import BybitDemoExecutor
+
+        try:
+            ex = BybitDemoExecutor(cfg)
+        except Exception:  # noqa: BLE001 — offline/no creds: journal-only snapshot
+            ex = None
         req = urllib.request.Request(
             url,
-            data=json.dumps(compute_snapshot(cfg)).encode(),
+            data=json.dumps(compute_snapshot(cfg, ex)).encode(),
             headers={"Content-Type": "application/json", "x-trading-secret": secret},
         )
         with urllib.request.urlopen(req, timeout=15) as resp:

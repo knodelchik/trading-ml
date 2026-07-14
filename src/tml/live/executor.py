@@ -244,6 +244,36 @@ class BybitDemoExecutor:
         t = self.session.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
         return float(t["bid1Price"]), float(t["ask1Price"])
 
+    def closed_pnl_since(self, start_ms: int) -> list[dict]:
+        """Closed round trips from Bybit (authoritative realized P&L per
+        position close — captures trips opened before our local journal
+        existed). Paginated."""
+        out: list[dict] = []
+        cursor = ""
+        while True:
+            kwargs = {"category": "linear", "settleCoin": "USDT", "startTime": start_ms, "limit": 100}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = self.session.get_closed_pnl(**kwargs)["result"]
+            page = result["list"]
+            out.extend(
+                {
+                    # closing side is opposite the position; Sell closes a long
+                    "symbol": c["symbol"],
+                    "side": "long" if c["side"] == "Sell" else "short",
+                    "qty": float(c["qty"]),
+                    "closed_pnl": float(c["closedPnl"]),
+                    "open_ms": int(c["createdTime"]),
+                    "close_ms": int(c["updatedTime"]),
+                    "order_id": c["orderId"],
+                }
+                for c in page
+            )
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor or len(page) < 100:
+                break
+        return out
+
     def executions_since(self, start_ms: int) -> list[dict]:
         """All linear USDT executions since start_ms (paginated). The durable
         local fills journal is built from this — Bybit demo keeps executions
