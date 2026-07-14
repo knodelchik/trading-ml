@@ -92,11 +92,11 @@ class BybitDemoExecutor:
 
     # --- account & instruments -------------------------------------------------
 
-    def lot_filters(self) -> dict[str, LotFilter]:
+    def lot_filters(self, pairs: list[str], require_all: bool = True) -> dict[str, LotFilter]:
         # per-symbol queries: the unfiltered instruments list is PAGINATED
         # and silently drops symbols beyond the first page
         out: dict[str, LotFilter] = {}
-        for pair in self.cfg.data.pairs:
+        for pair in pairs:
             symbol = pair_key(pair)
             items = self.session.get_instruments_info(category="linear", symbol=symbol)["result"]["list"]
             if items and items[0].get("status") == "Trading":
@@ -107,18 +107,18 @@ class BybitDemoExecutor:
                     min_notional=Decimal(f.get("minNotionalValue", "5")),
                     tick_size=Decimal(items[0]["priceFilter"]["tickSize"]),
                 )
-        missing = {pair_key(p) for p in self.cfg.data.pairs} - set(out)
-        if missing:
+        missing = {pair_key(p) for p in pairs} - set(out)
+        if missing and require_all:
             raise RuntimeError(f"symbols not tradable on Bybit linear: {sorted(missing)}")
         return out
 
-    def ensure_leverage_1x(self) -> None:
+    def ensure_leverage_1x(self, symbols: list[str]) -> None:
         from pybit.exceptions import InvalidRequestError
 
-        for pair in self.cfg.data.pairs:
+        for symbol in symbols:
             try:
                 self.session.set_leverage(
-                    category="linear", symbol=pair_key(pair), buyLeverage="1", sellLeverage="1"
+                    category="linear", symbol=symbol, buyLeverage="1", sellLeverage="1"
                 )
             except InvalidRequestError as e:
                 if getattr(e, "status_code", None) != 110043:  # 110043 = already 1x

@@ -16,15 +16,38 @@ from datetime import UTC, datetime, timedelta
 
 from tml.config import Config
 from tml.live import state
-from tml.policy import decide, position_state
+from tml.policy import Action, State, decide, position_state
+
+
+def gate_action(
+    symbol: str,
+    score: float,
+    pos_state: State,
+    tradable: set[str],
+    has_filter: bool,
+    enter: float,
+    exit_: float,
+    allow_short: bool,
+) -> Action:
+    """Universe gating on top of the shared hysteresis: current members
+    (that trade on Bybit) decide normally; a holding in a symbol that left
+    the universe is flattened; a non-member with no position is left alone.
+    Never OPENS a non-member."""
+    if symbol not in tradable:
+        if pos_state == "flat" or not has_filter:
+            return "hold"
+        return "close"
+    return decide(score, pos_state, enter, exit_, allow_short)
 
 
 def run_tick(cfg: Config) -> int:
     from tml.data.funding import run_funding_ingest
     from tml.data.ingest import run_ingest
+    from tml.data.store import pair_key
     from tml.live import notify
     from tml.live.executor import BybitDemoExecutor, load_env_file
     from tml.live.signals import latest_scores
+    from tml.universe import current_members
 
     load_env_file(cfg.root)  # telegram creds may be needed before the executor exists
 
@@ -54,11 +77,24 @@ def run_tick(cfg: Config) -> int:
         state.log_error(cfg, {"stage": "staleness", "latest_ts": latest_ts.isoformat()})
         raise RuntimeError(f"latest bar {latest_ts} is more than 2 bars old — refusing to trade")
 
-    # 3) exchange state
+    # 3) exchange state. In universe mode only the CURRENT month's members
+    # (that also trade on Bybit) are actively tradable; positions in symbols
+    # that dropped out of the universe are flattened (mirrors the backtest's
+    # membership-exit force-close).
     ex = BybitDemoExecutor(cfg)
-    filters = ex.lot_filters()
-    ex.ensure_leverage_1x()
     positions = ex.positions()
+    if cfg.universe.enabled:
+        members = current_members(cfg)
+        member_syms = {pair_key(p) for p in members}
+        # filters for members (to enter) plus any held symbol (to exit) —
+        # a dropped-out holding is no longer a member but still needs a lot
+        held_pairs = [f"{s[:-4]}/USDT" for s in positions if s not in member_syms]
+        filters = ex.lot_filters(members + held_pairs, require_all=False)
+        tradable = set(member_syms) & set(filters)  # members that trade on Bybit
+    else:
+        filters = ex.lot_filters(list(cfg.data.pairs), require_all=True)
+        tradable = set(filters)
+    ex.ensure_leverage_1x(sorted(set(filters)))
 
     # 3a) manage maker limits resting from previous ticks: cancel after TTL
     # and fall back to market for the unfilled remainder; symbols with a
@@ -97,7 +133,12 @@ def run_tick(cfg: Config) -> int:
         if short_positions:
             raise RuntimeError(f"unexpected SHORT positions on the account: {short_positions}")
 
-    # 4) decide + submit
+    # 4) decide + submit. Size each position at the backtest's notional
+    # (initial_cash / universe_size) so live matches the validated sizing.
+    n_slots = cfg.universe.size if cfg.universe.enabled else len(cfg.data.pairs)
+    notional_per_pair = min(
+        cfg.live.notional_per_pair_usdt, cfg.backtest.initial_cash_usdt / n_slots
+    )
     hour_tag = latest_ts.strftime("%Y%m%d%H")
     exposure = sum(
         abs(q) * float(scores.filter(scores["pair"] == s)["close"][0])
@@ -117,9 +158,12 @@ def run_tick(cfg: Config) -> int:
             continue
         current_qty = positions.get(symbol, 0.0)
         pos_state = position_state(current_qty, px, cfg.live.min_order_notional_usdt)
-        action = decide(
+        action = gate_action(
+            symbol,
             score,
             pos_state,
+            tradable,
+            symbol in filters,
             cfg.backtest.enter_threshold,
             cfg.backtest.exit_threshold,
             cfg.backtest.allow_short,
@@ -140,7 +184,7 @@ def run_tick(cfg: Config) -> int:
             continue
         if action in ("open_long", "open_short"):
             budget = min(
-                cfg.live.notional_per_pair_usdt,
+                notional_per_pair,
                 max(0.0, cfg.live.max_total_exposure_usdt - exposure),
             )
             qty = ex.quantize(symbol, budget / px, filters)

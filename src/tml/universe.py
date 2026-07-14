@@ -180,6 +180,13 @@ def build_membership(cfg: Config, daily: pl.DataFrame) -> pl.DataFrame:
     return membership
 
 
+def current_members(cfg: Config) -> list[str]:
+    """The CURRENT month's universe membership as 'BASE/USDT' pairs — the
+    set the live bot is allowed to actively enter. Written by `tml universe`."""
+    data = json.loads(current_pairs_path(cfg).read_text())
+    return sorted(f"{s[:-4]}/USDT" for s in data["pairs"])
+
+
 def pairs_for(cfg: Config) -> list[str]:
     """Data-stage pair list: static config pairs, or (universe mode) every
     symbol that was EVER a member — history for ex-members is still needed

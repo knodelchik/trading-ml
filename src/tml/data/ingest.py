@@ -119,10 +119,16 @@ def run_ingest(cfg: Config) -> int:
     total = 0
     from tml.universe import pairs_for
 
-    for pair in pairs_for(cfg):
+    pairs = pairs_for(cfg)
+    for pair in pairs:
         t0 = time.time()
-        n = fetch_pair(exchange, cfg, pair)
+        try:
+            n = fetch_pair(exchange, cfg, pair)
+        except ccxt.BadSymbol:
+            # delisted (e.g. old LUNA/WAVES in a point-in-time universe):
+            # its archived history stays; nothing new to fetch
+            continue
         total += n
         print(f"{pair}: +{n} bars in {time.time() - t0:.1f}s")
-    print(f"ingest done: {total} new bars across {len(pairs_for(cfg))} pairs")
+    print(f"ingest done: {total} new bars across {len(pairs)} pairs")
     return 0

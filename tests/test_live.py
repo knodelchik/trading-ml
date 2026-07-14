@@ -31,6 +31,26 @@ def test_decide_hysteresis_with_shorts():
     assert decide(-0.1, "long", enter, exit_, True) == "close"
 
 
+def test_gate_action_universe():
+    from tml.live.tick import gate_action
+
+    trad = {"BTCUSDT", "ETHUSDT"}
+    e, x = 0.5, 0.0
+    # current member, flat, strong score -> normal entry
+    assert gate_action("BTCUSDT", 0.9, "flat", trad, True, e, x, True) == "open_long"
+    assert gate_action("BTCUSDT", -0.9, "flat", trad, True, e, x, True) == "open_short"
+    # non-member, flat -> never open
+    assert gate_action("XRPUSDT", 0.9, "flat", trad, True, e, x, True) == "hold"
+    assert gate_action("XRPUSDT", -0.9, "flat", trad, True, e, x, True) == "hold"
+    # dropped-out holding (non-member, has position + filter) -> flatten
+    assert gate_action("XRPUSDT", 0.9, "long", trad, True, e, x, True) == "close"
+    assert gate_action("XRPUSDT", -0.9, "short", trad, True, e, x, True) == "close"
+    # dropped-out holding but no lot filter (not on Bybit) -> can't act, hold
+    assert gate_action("XRPUSDT", 0.9, "long", trad, False, e, x, True) == "hold"
+    # current member holding exits normally on score reversal
+    assert gate_action("BTCUSDT", -0.1, "long", trad, True, e, x, True) == "close"
+
+
 def test_position_state():
     assert position_state(0.0, 100.0, 25.0) == "flat"
     assert position_state(1.0, 100.0, 25.0) == "long"
