@@ -90,7 +90,7 @@ def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
 
 
 def bar_type_for(instrument: CryptoPerpetual, timeframe: str) -> BarType:
-    spec = {"1h": "1-HOUR", "1d": "1-DAY", "1m": "1-MINUTE"}[timeframe]
+    spec = {"1h": "1-HOUR", "1d": "1-DAY", "1m": "1-MINUTE", "15m": "15-MINUTE"}[timeframe]
     return BarType.from_str(f"{instrument.id}-{spec}-LAST-EXTERNAL")
 
 
