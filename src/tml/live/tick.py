@@ -12,6 +12,7 @@ exit_threshold from [backtest]) applied to the persisted ensemble's score.
 from __future__ import annotations
 
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from tml.config import Config
@@ -208,7 +209,11 @@ def run_tick(cfg: Config) -> int:
             reduce_only = True
             exposure -= float(qty) * px
 
-        link_id = f"tml-{symbol}-{hour_tag}-{'o' if side == 'Buy' else 'c'}"
+        # unique per ATTEMPT: Bybit rejects a duplicate orderLinkId even after
+        # the prior order was cancelled, so a bar-hour id blocked retries once
+        # a PostOnly got cancelled. Idempotency comes from position + resting-
+        # order reconciliation, not the id.
+        link_id = f"tml-{symbol}-{hour_tag}-{'o' if side == 'Buy' else 'c'}-{uuid.uuid4().hex[:5]}"
         try:
             # CLOSES always go to market: an exit we've decided on must
             # complete reliably (a passive close-limit that never fills leaves
