@@ -51,6 +51,40 @@ def test_gate_action_universe():
     assert gate_action("BTCUSDT", -0.1, "long", trad, True, e, x, True) == "close"
 
 
+def test_compute_snapshot(tmp_path):
+    import json
+
+    from tests.conftest import make_config
+    from tml.live.snapshot import compute_snapshot
+    from tml.live.state import journal_dir
+
+    cfg = make_config(tmp_path)
+    d = journal_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    # one closed LONG round trip: buy 10 @ 100, sell 10 @ 110 -> +100 gross,
+    # minus 1.3+1.43 fees = +97.27 USDT = 9727 cents
+    fills = [
+        {"exec_id": "e1", "ts_ms": 1_000_000_000_000, "symbol": "BTCUSDT", "side": "Buy",
+         "qty": 10.0, "px": 100.0, "fee_usdt": 1.30, "is_maker": True, "closed_pnl": 0.0, "order_link_id": ""},
+        {"exec_id": "e2", "ts_ms": 1_000_000_000_000 + 86_400_000, "symbol": "BTCUSDT", "side": "Sell",
+         "qty": 10.0, "px": 110.0, "fee_usdt": 1.43, "is_maker": False, "closed_pnl": 0.0, "order_link_id": ""},
+    ]
+    with (d / "fills.jsonl").open("w") as f:
+        for x in fills:
+            f.write(json.dumps(x) + "\n")
+    with (d / "equity.jsonl").open("w") as f:
+        f.write(json.dumps({"bar_ts": "2026-07-01T00:00:00+00:00", "total_equity": 100000.0}) + "\n")
+
+    snap = compute_snapshot(cfg)
+    assert snap["nTradesClosed"] == 1
+    assert snap["realizedCents"] == 9727  # +97.27 USDT
+    assert snap["winRatePct"] == 100.0
+    assert snap["makerSharePct"] == 50.0  # 1 of 2 fills maker
+    assert snap["openPositions"] == []
+    assert snap["equityCents"] == 10_000_000
+    assert snap["trades"][0]["symbol"] == "BTCUSDT" and snap["trades"][0]["side"] == "long"
+
+
 def test_position_state():
     assert position_state(0.0, 100.0, 25.0) == "flat"
     assert position_state(1.0, 100.0, 25.0) == "long"

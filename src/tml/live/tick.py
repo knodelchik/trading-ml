@@ -274,6 +274,14 @@ def run_tick(cfg: Config) -> int:
     eq = ex.equity_usdt()
     state.log_equity(cfg, {"bar_ts": latest_ts.isoformat(), **eq, "n_orders": len(submitted)})
 
+    # 6a) push dashboard snapshot to lifeos (best-effort, never breaks a tick)
+    try:
+        from tml.live.snapshot import push_snapshot
+
+        push_snapshot(cfg)
+    except Exception as e:  # noqa: BLE001
+        state.log_error(cfg, {"stage": "push", "error": repr(e)})
+
     # 7) telegram: every trade immediately; daily digest at 06:00 UTC (09:00 Київ)
     if tg_lines:
         notify.send(
