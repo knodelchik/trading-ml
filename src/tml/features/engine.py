@@ -108,6 +108,10 @@ def build_features(cfg: Config) -> pl.DataFrame:
         from tml.features.funding import add_funding_features
 
         all_pairs = add_funding_features(all_pairs, cfg)
+    if cfg.data.taker:
+        from tml.features.taker import add_taker_features
+
+        all_pairs = add_taker_features(all_pairs, cfg)
     return add_cs_ranks(all_pairs, list(cfg.features.cs_rank_cols))
 
 

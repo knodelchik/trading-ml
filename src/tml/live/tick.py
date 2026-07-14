@@ -55,13 +55,19 @@ def run_tick(cfg: Config) -> int:
         print(f"tick: kill switch present ({state.kill_switch_path(cfg)}) — doing nothing")
         return 0
 
-    # 1) freshest data (incremental; funding included via run_ingest)
+    # 1) freshest data (incremental). run_ingest fetches only OHLCV bars, so
+    # funding/taker must be refreshed explicitly when enabled — otherwise
+    # their features silently go stale in live (this was an inverted-guard bug).
     rc = run_ingest(cfg)
     if rc != 0:
         state.log_error(cfg, {"stage": "ingest", "rc": rc})
         return rc
-    if not cfg.data.funding:
+    if cfg.data.funding:
         run_funding_ingest(cfg)
+    if cfg.data.taker:
+        from tml.data.taker import run_taker_ingest
+
+        run_taker_ingest(cfg)
 
     # 2) signals from the latest completed bar (journal failures: a bricked
     # model load must leave a trail, not just a dead systemd unit)

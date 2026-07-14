@@ -29,6 +29,7 @@ class DataConfig(_Frozen):
     since: datetime
     pairs: tuple[str, ...]
     funding: bool = False  # also ingest USDT-perp funding rates for pairs
+    taker: bool = False  # also ingest taker buy/sell flow (order-flow features)
 
     @field_validator("pairs")
     @classmethod

@@ -120,6 +120,45 @@ def _interval_duration(interval: str) -> pl.Expr:
     return pl.duration(milliseconds=ms)
 
 
+def fetch_spot_taker_month(symbol: str, interval: str, month: str) -> pl.DataFrame | None:
+    """One month of spot klines reduced to the taker buy/sell split:
+    taker_buy_ratio = taker_buy_quote / quote_volume (fraction of volume
+    that lifted the offer — aggressive buying). ts = bar CLOSE, UTC.
+    Columns 7=quote_volume, 10=taker_buy_quote in the 12-col kline CSV.
+    """
+    url = f"{BASE}/spot/monthly/klines/{symbol}/{interval}/{symbol}-{interval}-{month}.zip"
+    blob = _get(url)
+    if blob is None:
+        return None
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        raw = zf.read(zf.namelist()[0]).decode()
+    rows = list(csv.reader(io.StringIO(raw)))
+    if rows and not rows[0][0].isdigit():
+        rows = rows[1:]
+    if not rows:
+        return None
+    return (
+        pl.DataFrame(
+            {
+                "open_us": [_epoch_to_us(int(r[0])) for r in rows],
+                "quote_volume": [float(r[7]) for r in rows],
+                "taker_buy_quote": [float(r[10]) for r in rows],
+            }
+        )
+        .with_columns(
+            ts=(pl.from_epoch("open_us", time_unit="us") + _interval_duration(interval))
+            .dt.replace_time_zone("UTC"),
+            # neutral 0.5 when a bar had zero volume (no information)
+            taker_buy_ratio=pl.when(pl.col("quote_volume") > 0)
+            .then(pl.col("taker_buy_quote") / pl.col("quote_volume"))
+            .otherwise(0.5),
+            pair=pl.lit(symbol),
+        )
+        .select("ts", "taker_buy_ratio", "pair")
+        .sort("ts")
+    )
+
+
 def fetch_funding_month(symbol: str, month: str) -> pl.DataFrame | None:
     """One month of perp funding settlements (HAS a header row)."""
     url = f"{BASE}/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month}.zip"
