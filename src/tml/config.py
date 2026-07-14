@@ -165,6 +165,18 @@ class OptunaConfig(_Frozen):
     inner_train_frac: float = 0.5
 
 
+class MetaConfig(_Frozen):
+    """Meta-labeling bet sizing (M5.3). A second model predicts P(a triggered
+    trade is profitable); positions size by that probability. Trained
+    walk-forward on the primary model's OOS predictions (leakage-safe:
+    fold k's meta-model sees only earlier folds' OOS)."""
+
+    enabled: bool = False
+    min_p: float = 0.5  # below this probability, skip the trade entirely
+    max_mult: float = 2.0  # size multiplier at p = 1.0
+    seed: int = 42
+
+
 class UniverseConfig(_Frozen):
     """Point-in-time universe (M5.2). When enabled, pair membership is
     decided monthly from trailing liquidity instead of cfg.data.pairs."""
@@ -241,6 +253,7 @@ class Config(_Frozen):
     execution: ExecutionConfig = ExecutionConfig()
     optuna: OptunaConfig = OptunaConfig()
     universe: UniverseConfig = UniverseConfig()
+    meta: MetaConfig = MetaConfig()
     live: LiveConfig = LiveConfig()
     root: Path
 

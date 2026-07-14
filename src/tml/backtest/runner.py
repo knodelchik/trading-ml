@@ -102,6 +102,15 @@ def run_backtest(cfg: Config) -> int:
         for row in oos.with_columns(ts_ns=pl.col("ts").dt.epoch(time_unit="ns")).iter_rows(named=True)
     }
 
+    size_mult = None
+    if cfg.meta.enabled:
+        from tml.pipeline.meta import size_multipliers
+
+        raw = size_multipliers(cfg) or {}
+        size_mult = {(f"{pk}.{VENUE_NAME}", ts): m for (pk, ts), m in raw.items()}
+        kept = sum(1 for m in size_mult.values() if m > 0)
+        print(f"backtest: meta sizing on {len(size_mult)} signals, {kept} pass the p-filter")
+
     # point-in-time universe: a pair's membership can end mid-backtest —
     # flatten at its last in-universe bar instead of freezing the position
     force_close: set[tuple[str, int]] = set()
@@ -132,6 +141,7 @@ def run_backtest(cfg: Config) -> int:
         execution_delay_bars=cfg.backtest.execution_delay_bars,
         allow_short=cfg.backtest.allow_short,
         force_close=force_close,
+        size_mult=size_mult,
     )
     engine.add_strategy(strategy)
     engine.run()

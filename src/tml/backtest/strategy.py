@@ -42,9 +42,13 @@ class SignalStrategy(Strategy):
         execution_delay_bars: int = 0,
         allow_short: bool = False,
         force_close: set[tuple[str, int]] | None = None,
+        size_mult: dict[tuple[str, int], float] | None = None,
     ):
         super().__init__()
         self.signals = signals
+        # meta-labeling bet sizing: (instrument_id str, ts_ns) -> multiplier
+        # applied to the OPEN notional (0 = skip). None = uniform sizing.
+        self.size_mult = size_mult
         self._instruments = instruments
         self._timeframe = timeframe
         self.enter_threshold = enter_threshold
@@ -100,14 +104,21 @@ class SignalStrategy(Strategy):
         if action == "hold":
             return
 
-        if action == "open_long":
-            headroom = self._cash / (1 + 2 * self.fee_rate) - self.min_rebalance_notional
-            affordable = max(0.0, min(self.notional, headroom))
-            if affordable < self.min_rebalance_notional:
-                return
-            side, qty_f = OrderSide.BUY, affordable / px
-        elif action == "open_short":
-            side, qty_f = OrderSide.SELL, self.notional / px
+        if action in ("open_long", "open_short"):
+            mult = 1.0
+            if self.size_mult is not None:
+                mult = self.size_mult.get((str(inst_id), int(bar.ts_event)), 0.0)
+                if mult <= 0.0:
+                    return  # meta-model vetoed this low-conviction trade
+            notional = self.notional * mult
+            if action == "open_long":
+                headroom = self._cash / (1 + 2 * self.fee_rate) - self.min_rebalance_notional
+                affordable = max(0.0, min(notional, headroom))
+                if affordable < self.min_rebalance_notional:
+                    return
+                side, qty_f = OrderSide.BUY, affordable / px
+            else:
+                side, qty_f = OrderSide.SELL, notional / px
         elif state == "long":  # close long
             side, qty_f = OrderSide.SELL, current_qty
         else:  # close short

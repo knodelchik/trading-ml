@@ -15,7 +15,7 @@ from tml.config import load_config
 # adds ledger trials and changes effective parameters. Live commands are
 # likewise explicit-only.
 STAGES = ["ingest", "quality", "features", "labels", "cv", "backtest", "report"]
-EXTRA_COMMANDS = ["tune", "train-live", "tick", "universe"]
+EXTRA_COMMANDS = ["tune", "train-live", "tick", "universe", "meta"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,6 +78,10 @@ def _run_stage(command: str, cfg) -> int:
         from tml.universe import run_universe
 
         return run_universe(cfg)
+    if command == "meta":
+        from tml.pipeline.meta import run_meta
+
+        return run_meta(cfg)
     if command == "backtest":
         from tml.backtest.runner import run_backtest
 
