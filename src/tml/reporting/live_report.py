@@ -48,10 +48,30 @@ def build_live_report(cfg: Config) -> int:
     total_fees = sum(f["fee_usdt"] for f in fills)
     gross_traded = sum(f["qty"] * f["px"] for f in fills)
 
-    closes = [f for f in fills if f["closed_pnl"] != 0.0]  # closing executions carry realized PnL
-    realized = sum(f["closed_pnl"] for f in closes)
-    wins = sum(1 for f in closes if f["closed_pnl"] > 0)
-    n_trades = len(closes)
+    # P&L from fill cash flows per symbol (self-contained; doesn't rely on
+    # Bybit's closedPnl field). Net cash flow = sells - buys - fees; when a
+    # symbol is flat this IS its realized P&L. Round trips counted per symbol
+    # as sign flips through zero.
+    by_symbol: dict[str, dict] = {}
+    for f in sorted(fills, key=lambda r: r["ts_ms"]):
+        s = by_symbol.setdefault(f["symbol"], {"cash": 0.0, "pos": 0.0, "trips": 0, "wins": 0, "open_cash": 0.0})
+        signed = f["qty"] if f["side"] == "Buy" else -f["qty"]
+        flow = (-f["qty"] * f["px"] if f["side"] == "Buy" else f["qty"] * f["px"]) - f["fee_usdt"]
+        s["cash"] += flow
+        prev = s["pos"]
+        s["pos"] += signed
+        # a round trip completes when position returns to (near) zero
+        if abs(prev) > 1e-9 and abs(s["pos"]) <= 1e-9:
+            s["trips"] += 1
+            if s["cash"] - s["open_cash"] > 0:
+                s["wins"] += 1
+            s["open_cash"] = s["cash"]
+        elif abs(prev) <= 1e-9 and abs(s["pos"]) > 1e-9:
+            s["open_cash"] = s["cash"] + f["qty"] * f["px"] + f["fee_usdt"]  # reset basis at open
+    realized = sum(v["cash"] for v in by_symbol.values() if abs(v["pos"]) <= 1e-9)
+    n_trades = sum(v["trips"] for v in by_symbol.values())
+    wins = sum(v["wins"] for v in by_symbol.values())
+    open_syms = [k for k, v in by_symbol.items() if abs(v["pos"]) > 1e-9]
 
     bt = _backtest_expectations(cfg)
     exp_maker = bt.get("maker_fill_share")
@@ -65,13 +85,14 @@ def build_live_report(cfg: Config) -> int:
         f"- executions: {n_fills} ({7*n_fills/span_days:.1f}/week)",
         f"- closing trades (realized): {n_trades} ({7*n_trades/span_days:.1f}/week)",
         "",
-        "## Realized P&L (Bybit closedPnl — excludes demo gift coins)",
+        "## Realized P&L (closed round trips, net of fees — excludes open positions & demo gift coins)",
         "",
-        f"- realized P&L: **{realized:+.2f} USDT**",
-        f"- fees paid: {total_fees:.2f} USDT",
-        f"- net of fees: **{realized - total_fees:+.2f} USDT**",
-        f"- win rate: {wins}/{n_trades} = {wins/n_trades:.1%}" if n_trades else "- win rate: n/a (no closed trades yet)",
-        f"- avg realized / trade: {realized/n_trades:+.2f} USDT" if n_trades else "",
+        f"- realized P&L (net): **{realized:+.2f} USDT**",
+        f"- fees paid (all fills): {total_fees:.2f} USDT",
+        f"- closed round trips: {n_trades}"
+        + (f", win rate {wins}/{n_trades} = {wins/n_trades:.1%}" if n_trades else " (none closed yet)"),
+        f"- avg realized / trip: {realized/n_trades:+.2f} USDT" if n_trades else "",
+        f"- still-open positions: {len(open_syms)} ({', '.join(open_syms) if open_syms else 'none'})",
         "",
         "## Execution quality vs backtest",
         "",
@@ -98,12 +119,10 @@ def build_live_report(cfg: Config) -> int:
         f"угод: {n_trades} | вінрейт: {wins/n_trades:.0%}\n" if n_trades else f"📊 <b>tml</b> ({span_days:.0f}д): ще нема закритих угод\n"
     )
     if n_trades:
-        summary += (
-            f"реалізовано: {realized:+.0f} USDT (комісії {total_fees:.0f})\n"
-            f"мейкер-філів: {maker/n_fills:.0%} (бектест {exp_maker:.0%})"
-            if exp_maker is not None
-            else ""
-        )
+        summary += f"реалізовано: {realized:+.0f} USDT (комісії {total_fees:.0f})\n"
+    summary += (
+        f"мейкер-філів: {maker/n_fills:.0%}" + (f" (бектест {exp_maker:.0%})" if exp_maker is not None else "")
+    )
     from tml.live import notify
 
     notify.send(summary)
