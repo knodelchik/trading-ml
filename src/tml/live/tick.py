@@ -210,23 +210,29 @@ def run_tick(cfg: Config) -> int:
 
         link_id = f"tml-{symbol}-{hour_tag}-{'o' if side == 'Buy' else 'c'}"
         try:
-            if cfg.execution.mode == "maker":
+            # CLOSES always go to market: an exit we've decided on must
+            # complete reliably (a passive close-limit that never fills leaves
+            # us stuck in the position). Only OPENS use maker (patient, saves
+            # fees), priced at the Bybit touch so PostOnly never crosses.
+            if cfg.execution.mode == "maker" and not reduce_only:
                 from tml.live.executor import quantize_price
 
                 f = filters[symbol]
-                raw_px = px - float(f.tick_size) if side == "Buy" else px + float(f.tick_size)
+                bid, ask = ex.best_bid_ask(symbol)
+                raw_px = bid if side == "Buy" else ask
                 limit_px = quantize_price(raw_px, side, f)
                 order_id = ex.limit_post_only(symbol, side, qty, limit_px, link_id, reduce_only)
+                verb = "🟢 виставив лімітку ЛОНГ" if action == "open_long" else "🔴 виставив лімітку ШОРТ"
             else:
                 order_id = ex.market_order(symbol, side, qty, link_id, reduce_only)
+                verb = {
+                    "open_long": "🟢 відкрив ЛОНГ",
+                    "open_short": "🔴 відкрив ШОРТ",
+                    "close": "⚪ закрив " + ("лонг" if pos_state == "long" else "шорт"),
+                }[action]
             submitted.append((symbol, order_id))
-            human = {
-                "open_long": "🟢 відкрив ЛОНГ",
-                "open_short": "🔴 відкрив ШОРТ",
-                "close": "⚪ закрив " + ("лонг" if pos_state == "long" else "шорт"),
-            }[action]
             tg_lines.append(
-                f"{human} <b>{symbol}</b>: {qty} @ ~{px:g} (~{float(qty) * px:,.0f} USDT, скор {score:+.2f})"
+                f"{verb} <b>{symbol}</b>: {qty} @ ~{px:g} (~{float(qty) * px:,.0f} USDT, скор {score:+.2f})"
             )
             state.log_order(
                 cfg,

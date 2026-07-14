@@ -237,6 +237,13 @@ class BybitDemoExecutor:
     def cancel(self, symbol: str, order_id: str) -> None:
         self.session.cancel_order(category="linear", symbol=symbol, orderId=order_id)
 
+    def best_bid_ask(self, symbol: str) -> tuple[float, float]:
+        """(best bid, best ask) from Bybit — the real book, so a maker limit
+        priced at the touch does NOT cross (pricing one tick inside the
+        Binance close crossed the Bybit spread and got PostOnly-rejected)."""
+        t = self.session.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
+        return float(t["bid1Price"]), float(t["ask1Price"])
+
     def executions_since(self, start_ms: int) -> list[dict]:
         """All linear USDT executions since start_ms (paginated). The durable
         local fills journal is built from this — Bybit demo keeps executions
