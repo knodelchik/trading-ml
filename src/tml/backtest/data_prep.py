@@ -27,8 +27,28 @@ from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue  # noq
 from nautilus_trader.model.instruments import CryptoPerpetual  # noqa: E402
 from nautilus_trader.model.objects import Currency, Price, Quantity  # noqa: E402
 
-PRICE_PRECISION = 6
 SIZE_PRECISION = 6
+DEFAULT_PRICE_PRECISION = 6
+
+
+def price_precision_for(cfg: Config, pair: str) -> int:
+    """Per-symbol price precision so the tick is ~1e-6 of price (realistic:
+    matches real Binance ticks for majors, e.g. BTC->0.1). A single global
+    1e-6 tick was a 5-33% relative tick for sub-0.0001 coins (PEPE/SHIB),
+    quantizing their bars to ~10% and making passive maker fills impossible.
+    """
+    import math
+
+    med = (
+        store.scan_raw(cfg, pair)
+        .select(pl.col("close").median())
+        .collect()
+        .item()
+    )
+    if med is None or med <= 0:
+        return DEFAULT_PRICE_PRECISION
+    # tick ~ price * 1e-6  ->  precision = 6 - log10(price), clamped to [1, 9]
+    return int(min(9, max(1, round(6 - math.log10(med)))))
 
 
 def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
@@ -42,6 +62,7 @@ def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
     base = pair.split("/")[0]
     effective_taker = Decimal(cfg.execution.taker_fee_bps + cfg.execution.slippage_bps) / Decimal(10_000)
     maker = Decimal(cfg.execution.maker_fee_bps) / Decimal(10_000)
+    pp = price_precision_for(cfg, pair)
     return CryptoPerpetual(
         instrument_id=InstrumentId(Symbol(key), Venue(VENUE_NAME)),
         raw_symbol=Symbol(key),
@@ -49,9 +70,9 @@ def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
         quote_currency=USDT,
         settlement_currency=USDT,
         is_inverse=False,
-        price_precision=PRICE_PRECISION,
+        price_precision=pp,
         size_precision=SIZE_PRECISION,
-        price_increment=Price(10**-PRICE_PRECISION, precision=PRICE_PRECISION),
+        price_increment=Price(10**-pp, precision=pp),
         size_increment=Quantity(10**-SIZE_PRECISION, precision=SIZE_PRECISION),
         ts_event=0,
         ts_init=0,
@@ -59,8 +80,8 @@ def make_instrument(cfg: Config, pair: str) -> CryptoPerpetual:
         min_quantity=Quantity(10**-SIZE_PRECISION, precision=SIZE_PRECISION),
         max_notional=None,
         min_notional=None,
-        max_price=Price(100_000_000, precision=PRICE_PRECISION),
-        min_price=Price(10**-PRICE_PRECISION, precision=PRICE_PRECISION),
+        max_price=Price(100_000_000, precision=pp),
+        min_price=Price(10**-pp, precision=pp),
         margin_init=Decimal(0),  # engine skips margin risk checks anyway; blow-up guard is ours
         margin_maint=Decimal(0),
         maker_fee=maker,  # passive limit fills (no slippage by construction)
@@ -99,7 +120,10 @@ def bars_for_pair(
             high=Price(h, pp),
             low=Price(lo, pp),
             close=Price(c, pp),
-            volume=Quantity(v, sp),
+            # meme-coin base-unit volumes can exceed nautilus QUANTITY_MAX
+            # (~34e12); volume only feeds per-tick liquidity, so capping at
+            # 1e12 constrains nothing real
+            volume=Quantity(min(v, 1e12), sp),
             ts_event=t,
             ts_init=t,
         )

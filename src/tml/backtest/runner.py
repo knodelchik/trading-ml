@@ -79,13 +79,22 @@ def run_backtest(cfg: Config) -> int:
         fee_model=MakerTakerFeeModel(),  # stamps maker/taker fee per fill's liquidity side
     )
 
+    from tml.universe import pairs_for
+
+    trade_pairs = pairs_for(cfg)
     instruments = []
-    for pair in cfg.data.pairs:
+    skipped = 0
+    for pair in trade_pairs:
         inst = make_instrument(cfg, pair)
-        engine.add_instrument(inst)
         bars = bars_for_pair(cfg, pair, inst, window_start, window_end)
+        if not bars:
+            skipped += 1  # member only before the OOS window (or fully delisted pre-window)
+            continue
+        engine.add_instrument(inst)
         engine.add_data(bars)
         instruments.append(inst)
+    if skipped:
+        print(f"backtest: {skipped} symbols have no bars inside the OOS window — skipped")
     print(f"backtest: engine loaded, window [{window_start:%Y-%m-%d} .. {window_end:%Y-%m-%d})")
 
     signals = {
@@ -114,7 +123,10 @@ def run_backtest(cfg: Config) -> int:
         timeframe=cfg.data.timeframe,
         enter_threshold=cfg.backtest.enter_threshold,
         exit_threshold=cfg.backtest.exit_threshold,
-        notional_per_pair=cfg.backtest.initial_cash_usdt / len(cfg.data.pairs),
+        # concurrent positions are bounded by universe size (or the static
+        # pair count), not by every symbol that EVER was a member
+        notional_per_pair=cfg.backtest.initial_cash_usdt
+        / (cfg.universe.size if cfg.universe.enabled else len(cfg.data.pairs)),
         initial_cash=cfg.backtest.initial_cash_usdt,
         execution=cfg.execution,
         execution_delay_bars=cfg.backtest.execution_delay_bars,
