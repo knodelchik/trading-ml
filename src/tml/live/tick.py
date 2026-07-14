@@ -244,15 +244,20 @@ def run_tick(cfg: Config) -> int:
             state.log_error(cfg, {"stage": "order", "symbol": symbol, "error": repr(e)})
             print(f"tick: order failed for {symbol}: {e}")
 
-    # 5) journal fills (market orders settle near-instantly)
+    # 5) durably journal ALL executions since last tick (maker limits fill
+    # LATER than submission, so checking only just-submitted orders misses
+    # them; and Bybit demo keeps executions only ~7 days). Dedupe by execId.
     if submitted:
-        time.sleep(2)
-        for symbol, order_id in submitted:
-            try:
-                for fill in ex.executions_for(symbol, order_id):
-                    state.log_order(cfg, {"fill": fill, "order_id": order_id})
-            except Exception as e:  # noqa: BLE001
-                state.log_error(cfg, {"stage": "fills", "symbol": symbol, "error": repr(e)})
+        time.sleep(2)  # let just-submitted market orders settle before we query
+    try:
+        last = state.last_fill_ms(cfg)
+        # first run (or gap): look back 3 days, within Bybit's 7-day window
+        start_ms = (last - 3600_000) if last else (int(now.timestamp() * 1000) - 3 * 86_400_000)
+        n_new = state.journal_executions(cfg, ex.executions_since(start_ms))
+        if n_new:
+            print(f"tick: journaled {n_new} new fills")
+    except Exception as e:  # noqa: BLE001
+        state.log_error(cfg, {"stage": "fills", "error": repr(e)})
 
     # 6) equity snapshot
     eq = ex.equity_usdt()

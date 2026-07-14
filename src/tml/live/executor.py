@@ -237,6 +237,38 @@ class BybitDemoExecutor:
     def cancel(self, symbol: str, order_id: str) -> None:
         self.session.cancel_order(category="linear", symbol=symbol, orderId=order_id)
 
+    def executions_since(self, start_ms: int) -> list[dict]:
+        """All linear USDT executions since start_ms (paginated). The durable
+        local fills journal is built from this — Bybit demo keeps executions
+        only ~7 days, so every tick captures the window since the last one."""
+        out: list[dict] = []
+        cursor = ""
+        while True:
+            kwargs = {"category": "linear", "startTime": start_ms, "limit": 100}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = self.session.get_executions(**kwargs)["result"]
+            page = result["list"]
+            out.extend(
+                {
+                    "exec_id": e["execId"],
+                    "ts_ms": int(e["execTime"]),
+                    "symbol": e["symbol"],
+                    "side": e["side"],
+                    "qty": float(e["execQty"]),
+                    "px": float(e["execPrice"]),
+                    "fee_usdt": float(e["execFee"]),
+                    "is_maker": bool(e.get("isMaker")),
+                    "closed_pnl": float(e.get("closedPnl") or 0.0),
+                    "order_link_id": e.get("orderLinkId", ""),
+                }
+                for e in page
+            )
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor or len(page) < 100:
+                break
+        return out
+
     def executions_for(self, symbol: str, order_id: str) -> list[dict]:
         resp = self.session.get_executions(category="linear", symbol=symbol, orderId=order_id)
         return [

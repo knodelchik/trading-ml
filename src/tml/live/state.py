@@ -49,6 +49,33 @@ def log_equity(cfg: Config, record: dict) -> None:
     _append(cfg, "equity", record)
 
 
+def journal_executions(cfg: Config, execs: list[dict]) -> int:
+    """Append exchange executions not already recorded (dedupe by exec_id).
+    Returns the number of new fills captured."""
+    d = journal_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "fills.jsonl"
+    seen = {json.loads(line)["exec_id"] for line in path.open()} if path.exists() else set()
+    new = [e for e in execs if e["exec_id"] not in seen]
+    if new:
+        with open(path, "a") as f:
+            for e in sorted(new, key=lambda r: r["ts_ms"]):
+                f.write(json.dumps(e, sort_keys=True) + "\n")
+    return len(new)
+
+
+def last_fill_ms(cfg: Config) -> int | None:
+    path = journal_dir(cfg) / "fills.jsonl"
+    if not path.exists():
+        return None
+    last = None
+    with path.open() as f:
+        for line in f:
+            if line.strip():
+                last = json.loads(line)["ts_ms"]
+    return last
+
+
 def log_error(cfg: Config, record: dict) -> None:
     _append(cfg, "errors", record)
 
