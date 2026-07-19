@@ -11,3 +11,4 @@ artifacts/
 .env
 spike15m/
 spike1h/
+.claude/

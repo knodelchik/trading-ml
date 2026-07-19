@@ -4,9 +4,15 @@ that survives delistings, which a point-in-time universe depends on.
 Verified facts this module encodes:
   * monthly zips: spot klines
     data/spot/monthly/klines/{SYM}/{interval}/{SYM}-{interval}-{YYYY-MM}.zip
-    and USDT-perp funding
+    USDT-perp funding
     data/futures/um/monthly/fundingRate/{SYM}/{SYM}-fundingRate-{YYYY-MM}.zip
+    and USDT-perp premium-index klines (perp basis)
+    data/futures/um/monthly/premiumIndexKlines/{SYM}/1h/{SYM}-1h-{YYYY-MM}.zip
   * spot kline CSVs have NO header, 12 columns; funding CSVs HAVE a header;
+    premium-index kline CSVs HAVE a header, 12 kline columns whose
+    volume/taker fields are all zero (an index, not trades) and whose
+    "close" is the fractional perp-spot basis at the bar close
+    (verified against BTCUSDT 2024-01);
   * TIMESTAMP TRAP: kline open/close times are epoch MILLISECONDS through
     2024-12 and MICROSECONDS from 2025-01 — branch on digit count;
   * archives persist after delisting (LUNA, FTT verified); a 404 for a
@@ -182,6 +188,44 @@ def fetch_funding_month(symbol: str, month: str) -> pl.DataFrame | None:
             pair=pl.lit(symbol),
         )
         .drop("ts_us")
+        .sort("ts")
+    )
+
+
+def premium_month_url(symbol: str, year: int, month: int) -> str:
+    return (
+        f"{BASE}/futures/um/monthly/premiumIndexKlines/{symbol}/1h/"
+        f"{symbol}-1h-{year:04d}-{month:02d}.zip"
+    )
+
+
+def fetch_premium_month(symbol: str, year: int, month: int) -> pl.DataFrame | None:
+    """One month of 1h premium-index klines for a USDT perp; kline "close"
+    is the fractional perp-spot basis at the bar close. ts = bar CLOSE, UTC.
+    None if the archive doesn't exist (perp not trading that month)."""
+    blob = _get(premium_month_url(symbol, year, month))
+    if blob is None:
+        return None
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        raw = zf.read(zf.namelist()[0]).decode()
+    rows = list(csv.reader(io.StringIO(raw)))
+    if rows and not rows[0][0].isdigit():  # these CSVs ship WITH a header
+        rows = rows[1:]
+    if not rows:
+        return None
+    return (
+        pl.DataFrame(
+            {
+                "open_us": [_epoch_to_us(int(r[0])) for r in rows],
+                "basis": [float(r[4]) for r in rows],
+            }
+        )
+        .with_columns(
+            ts=(pl.from_epoch("open_us", time_unit="us") + _interval_duration("1h"))
+            .dt.replace_time_zone("UTC"),
+            pair=pl.lit(symbol),
+        )
+        .select("ts", "basis", "pair")
         .sort("ts")
     )
 

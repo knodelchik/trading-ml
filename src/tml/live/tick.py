@@ -69,6 +69,10 @@ def run_tick(cfg: Config) -> int:
         from tml.data.taker import run_taker_ingest
 
         run_taker_ingest(cfg)
+    if cfg.data.basis:
+        from tml.live.refresh import run_basis_refresh
+
+        run_basis_refresh(cfg)
 
     # 2) signals from the latest completed bar (journal failures: a bricked
     # model load must leave a trail, not just a dead systemd unit)

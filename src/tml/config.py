@@ -31,6 +31,7 @@ class DataConfig(_Frozen):
     funding: bool = False  # also ingest USDT-perp funding rates for pairs
     taker: bool = False  # also ingest taker buy/sell flow (order-flow features)
     btc_residual: bool = False  # BTC-residual momentum + cross-sectional z-scores (no extra ingest)
+    basis: bool = False  # also ingest perp premium-index klines (basis features)
 
     @field_validator("pairs")
     @classmethod

@@ -123,6 +123,10 @@ def build_features(cfg: Config) -> pl.DataFrame:
 
         all_pairs = add_residual_features(all_pairs, cfg)
         all_pairs = add_cs_zscores(all_pairs, list(CS_Z_COLS))
+    if cfg.data.basis:
+        from tml.features.basis import add_basis_features
+
+        all_pairs = add_basis_features(all_pairs, cfg)
     return add_cs_ranks(all_pairs, list(cfg.features.cs_rank_cols))
 
 

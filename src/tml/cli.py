@@ -49,6 +49,10 @@ def _run_stage(command: str, cfg) -> int:
             from tml.data.taker import run_taker_ingest
 
             rc = run_taker_ingest(cfg)
+        if rc == 0 and cfg.data.basis:
+            from tml.data.basis import run_basis_ingest
+
+            rc = run_basis_ingest(cfg)
         return rc
     if command == "quality":
         from tml.data.quality import run_quality

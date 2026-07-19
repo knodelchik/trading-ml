@@ -52,6 +52,7 @@ def make_config(
     root,
     pairs: tuple[str, ...] = PAIRS,
     funding: bool = False,
+    basis: bool = False,
     universe: dict | None = None,
     btc_residual: bool = False,
     features_overrides: dict | None = None,
@@ -68,6 +69,7 @@ def make_config(
                 "pairs": list(pairs),
                 "funding": funding,
                 "btc_residual": btc_residual,
+                "basis": basis,
             },
             "features": {
                 "ret_horizons": [1, 3, 6],
