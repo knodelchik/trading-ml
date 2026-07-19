@@ -99,7 +99,7 @@ max_total_exposure_usdt = 100000.0
 # hysteresis: enter only when predicted vol-scaled 24h return clears half a
 # vol unit (expected edge must exceed round-trip cost), exit when it turns
 # negative; positions trade only on state transitions, not every bar
-enter_threshold = 0.5
+enter_threshold = 0.4
 exit_threshold = 0.0
 allow_short = true               # M4: symmetric hysteresis on linear perps
 execution_delay_bars = 0           # set 1 for conservative next-bar-fill run
