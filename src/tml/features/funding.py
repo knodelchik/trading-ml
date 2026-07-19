@@ -41,8 +41,14 @@ def _per_pair_series(lf: pl.LazyFrame) -> pl.DataFrame:
 
 def add_funding_features(bars: pl.DataFrame, cfg: Config) -> pl.DataFrame:
     """bars: (ts, pair, ...) -> same frame + FUND_COLS (float32, 0-filled)."""
+    from tml.universe import pairs_for
+
+    # all tradable pairs, not the static cfg.data.pairs list: with the PIT
+    # universe enabled the dataset spans every ever-member, and looping the
+    # static list left ~80 pairs with fund_known=0 despite funding parquet
+    # existing on disk
     series = []
-    for pair in cfg.data.pairs:
+    for pair in pairs_for(cfg):
         lf = scan_funding(cfg, pair)
         if lf is not None:
             series.append(_per_pair_series(lf))

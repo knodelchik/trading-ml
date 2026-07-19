@@ -234,8 +234,9 @@ def _funding_flows(cfg: Config, grid: pl.DataFrame) -> pl.DataFrame:
     Returns (ts, funding_flow) aggregated per hourly mark.
     """
     from tml.data.funding import scan_funding
+    from tml.universe import pairs_for
 
-    frames = [lf.collect() for p in cfg.data.pairs if (lf := scan_funding(cfg, p)) is not None]
+    frames = [lf.collect() for p in pairs_for(cfg) if (lf := scan_funding(cfg, p)) is not None]
     if not frames:
         return pl.DataFrame(
             schema={"ts": pl.Datetime("us", "UTC"), "funding_flow": pl.Float64()}
