@@ -38,7 +38,7 @@ horizon_bars = 24
 vol_span = 72
 # S4 two-horizon blend: uncomment to trade 0.5*H24 + 0.5*H48 (H48 rescaled
 # by its frozen train-window std ratio). Requires cv.purge_bars = 48 and
-# embargo_bars = 48, changes model_hash -> atomic `tml train-live` at deploy.
+# embargo_bars = 24, changes model_hash -> atomic `tml train-live` at deploy.
 # horizons = [24, 48]
 
 [cv]
