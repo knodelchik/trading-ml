@@ -18,6 +18,7 @@ import numpy as np
 import polars as pl
 
 from tml.config import Config
+from tml.ensemble.stack import blend_horizons, horizon_scales, mean_ensemble
 from tml.features.engine import build_features
 from tml.live.persist import load_models
 
@@ -27,6 +28,10 @@ def latest_scores(cfg: Config) -> tuple[pl.DataFrame, datetime]:
 
     Pairs whose freshest bar lags the common latest timestamp are dropped
     for this tick (logged) — better no decision than a stale-feature one.
+
+    Multi-horizon (S4): `score` is the SAME equal-weight horizon blend the
+    research OOS trades, using the FROZEN train-time calibration persisted
+    in meta.json — never statistics computed at tick time.
     """
     feats = build_features(cfg)
     latest_ts = cast(datetime, feats["ts"].max())
@@ -46,11 +51,26 @@ def latest_scores(cfg: Config) -> tuple[pl.DataFrame, datetime]:
         )
     x = rows.select(cols).to_numpy().astype(np.float32)
 
-    member_scores = {name: np.asarray(m.predict(x), dtype=np.float64) for name, m in models.items()}
-    ensemble = np.mean(np.column_stack(list(member_scores.values())), axis=1)
+    horizons = [int(h) for h in meta.get("horizons", [cfg.labels.horizon_bars])]
+    base = horizons[0]
+    multi = len(horizons) > 1
+    member_scores: dict[str, np.ndarray] = {}
+    h_scores: dict[int, np.ndarray] = {}
+    for h in horizons:
+        preds = {name: np.asarray(m.predict(x), dtype=np.float64) for name, m in models[h].items()}
+        h_scores[h] = mean_ensemble(preds)
+        suffix = "" if h == base else f"_h{h}"
+        member_scores.update({f"{n}{suffix}": s for n, s in preds.items()})
+    if multi:
+        calib = {int(k): float(v) for k, v in meta["horizon_calib"].items()}
+        scales = horizon_scales(calib, base)
+    else:
+        scales = {base: 1.0}
+    ensemble = blend_horizons(h_scores, scales)
 
     out = rows.select("pair", "close").with_columns(
         score=pl.Series(ensemble),
         **{f"score_{n}": pl.Series(s) for n, s in member_scores.items()},
+        **({f"score_h{h}": pl.Series(s) for h, s in h_scores.items()} if multi else {}),
     )
     return out, latest_ts

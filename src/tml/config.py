@@ -81,6 +81,13 @@ class LabelsConfig(_Frozen):
     kind: Literal["fixed_horizon_volscaled"]  # "triple_barrier" arrives in M2
     horizon_bars: int
     vol_span: int
+    # Multi-horizon blend (S4): each horizon trains its own copy of the
+    # ensemble and the traded score is their equal-weight blend (see
+    # ensemble/stack.py: blend_horizons). () = single-horizon behavior.
+    # When set, horizons[0] must equal horizon_bars: the base horizon
+    # defines the score units the policy thresholds assume and the stride
+    # of every non-overlapping metric.
+    horizons: tuple[int, ...] = ()
 
     @field_validator("horizon_bars", "vol_span")
     @classmethod
@@ -88,6 +95,24 @@ class LabelsConfig(_Frozen):
         if v <= 0:
             raise ValueError("labels horizons must be positive")
         return v
+
+    @model_validator(mode="after")
+    def _horizons_consistent(self) -> LabelsConfig:
+        if self.horizons:
+            if self.horizons[0] != self.horizon_bars:
+                raise ValueError(
+                    f"labels.horizons[0] ({self.horizons[0]}) must equal labels.horizon_bars "
+                    f"({self.horizon_bars}): the base horizon sets the score units the "
+                    "policy thresholds assume"
+                )
+            if any(b <= a for a, b in zip(self.horizons, self.horizons[1:], strict=False)):
+                raise ValueError("labels.horizons must be strictly increasing")
+        return self
+
+    @property
+    def all_horizons(self) -> tuple[int, ...]:
+        """Every trained label horizon; (horizon_bars,) when the flag is off."""
+        return self.horizons or (self.horizon_bars,)
 
 
 class CVConfig(_Frozen):
@@ -261,10 +286,11 @@ class Config(_Frozen):
 
     @model_validator(mode="after")
     def _leakage_invariants(self) -> Config:
-        if self.cv.purge_bars < self.labels.horizon_bars:
+        max_h = max(self.labels.all_horizons)
+        if self.cv.purge_bars < max_h:
             raise ValueError(
-                f"cv.purge_bars ({self.cv.purge_bars}) must be >= labels.horizon_bars "
-                f"({self.labels.horizon_bars}): training samples whose labels overlap the "
+                f"cv.purge_bars ({self.cv.purge_bars}) must be >= the longest label horizon "
+                f"({max_h}): training samples whose labels overlap the "
                 "test window must be purged"
             )
         return self

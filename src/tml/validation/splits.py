@@ -29,8 +29,10 @@ class Fold:
     test_end: datetime  # exclusive
     purge_embargo_cutoff: datetime  # train samples need label_end_ts < this
 
-    def train_expr(self) -> pl.Expr:
-        return pl.col("label_end_ts") < self.purge_embargo_cutoff
+    def train_expr(self, end_col: str = "label_end_ts") -> pl.Expr:
+        """Purge + embargo in one condition; `end_col` selects which
+        horizon's label end drives the purge in multi-horizon training."""
+        return pl.col(end_col) < self.purge_embargo_cutoff
 
     def test_expr(self) -> pl.Expr:
         return (pl.col("ts") >= self.test_start) & (pl.col("ts") < self.test_end)

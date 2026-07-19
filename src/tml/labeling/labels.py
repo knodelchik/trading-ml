@@ -13,6 +13,10 @@ suggests, and purging on the shorter wall-clock end would under-purge near
 gaps). The CV purge is driven by it, so if the labeling scheme changes
 (e.g. triple barrier in M2, where label end varies per sample), purging
 stays correct with no changes to the splitter.
+
+Multi-horizon (S4): when labels.horizons is set, every extra horizon H adds
+`y_h{H}` / `label_end_ts_h{H}` columns built by the exact same primitive,
+so each horizon's purge cutoff reads its own label end.
 """
 
 from __future__ import annotations
@@ -49,16 +53,32 @@ def pair_labels(df: pl.DataFrame, horizon_bars: int, vol_span: int, bar_ms: int)
     )
 
 
+def horizon_cols(horizon: int, base: int) -> tuple[str, str]:
+    """(y column, label_end_ts column) for one horizon of the labels frame.
+
+    The base horizon keeps the unsuffixed names, so the single-horizon
+    artifact schema — and everything downstream that reads `y` /
+    `label_end_ts` — is unchanged when the multi-horizon flag is off.
+    """
+    if horizon == base:
+        return "y", "label_end_ts"
+    return f"y_h{horizon}", f"label_end_ts_h{horizon}"
+
+
 def build_labels(cfg: Config) -> pl.DataFrame:
-    frames = [
-        pair_labels(
-            store.scan_raw(cfg, pair).collect(),
-            cfg.labels.horizon_bars,
-            cfg.labels.vol_span,
-            cfg.data.bar_ms,
-        )
-        for pair in pairs_for(cfg)
-    ]
+    horizons = cfg.labels.all_horizons
+    base = horizons[0]
+    frames: list[pl.DataFrame] = []
+    for pair in pairs_for(cfg):
+        raw = store.scan_raw(cfg, pair).collect()
+        lab = pair_labels(raw, base, cfg.labels.vol_span, cfg.data.bar_ms)
+        for h in horizons[1:]:
+            ycol, endcol = horizon_cols(h, base)
+            extra = pair_labels(raw, h, cfg.labels.vol_span, cfg.data.bar_ms).rename(
+                {"y": ycol, "label_end_ts": endcol}
+            )
+            lab = lab.join(extra, on=["ts", "pair"], how="left", validate="1:1")
+        frames.append(lab)
     return pl.concat(frames, how="vertical").sort("ts", "pair")
 
 

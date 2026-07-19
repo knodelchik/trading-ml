@@ -17,7 +17,8 @@ import polars as pl
 
 from tml.config import Config
 from tml.data import store
-from tml.ensemble.stack import mean_ensemble, rank_average
+from tml.ensemble.stack import blend_horizons, horizon_scales, mean_ensemble, rank_average
+from tml.labeling.labels import horizon_cols
 from tml.validation import metrics
 from tml.validation.splits import Fold, PurgedWalkForwardCV, write_folds
 from tml.validation.trials import TrialsLedger
@@ -73,19 +74,33 @@ def dataset(cfg: Config) -> pl.DataFrame:
 
 
 def feature_cols(df: pl.DataFrame) -> list[str]:
-    return sorted(c for c in df.columns if c not in KEY_COLS)
+    # y_h*/label_end_ts_h* are extra-horizon LABEL columns — never features
+    return sorted(
+        c
+        for c in df.columns
+        if c not in KEY_COLS and not c.startswith(("y_h", "label_end_ts_h"))
+    )
 
 
 def run_cv_frames(
     df: pl.DataFrame, cfg: Config, lgbm_params: dict | None = None
 ) -> tuple[pl.DataFrame, list[Fold]]:
-    """Fit every member per fold, predict its test window, concatenate OOS.
+    """Fit every member per fold — and per label horizon when the S4
+    multi-horizon blend is on — predict its test window, concatenate OOS.
 
-    The tradeable `score` is the mean of member predictions (all regress the
-    same vol-scaled target, so units are preserved for the backtest
-    thresholds); per-member columns and a rank-average diagnostic are kept
-    for the report.
+    Per horizon, the ensemble score is the mean of member predictions (all
+    regress the same vol-scaled target, so units are preserved for the
+    backtest thresholds); per-member columns and a rank-average diagnostic
+    are kept for the report. With several horizons the tradeable `score` is
+    their equal-weight blend (`blend_horizons`), each non-base horizon
+    rescaled by its FROZEN train-window std ratio; the per-fold scales are
+    stamped into `blend_scale_h*` columns so the blend is auditable from
+    the artifact. A single horizon takes exactly the legacy path (bit-
+    identical scores, unchanged schema).
     """
+    horizons = cfg.labels.all_horizons
+    base = horizons[0]
+    multi = len(horizons) > 1
     cols = feature_cols(df)
     ts_index = df["ts"].unique().sort()
     folds = PurgedWalkForwardCV(cfg.cv, cfg.data.bar_ms).split(ts_index)
@@ -96,25 +111,50 @@ def run_cv_frames(
         )
     parts: list[pl.DataFrame] = []
     for fold in folds:
-        train = df.filter(fold.train_expr())
         test = df.filter(fold.test_expr())
-        if train.is_empty() or test.is_empty():
-            raise RuntimeError(f"fold {fold.fold_id} has empty train or test slice")
-        x_tr = train.select(cols).to_numpy().astype(np.float32)
-        y_tr = train["y"].to_numpy().astype(np.float32)
+        if test.is_empty():
+            raise RuntimeError(f"fold {fold.fold_id} has empty test slice")
         x_te = test.select(cols).to_numpy().astype(np.float32)
 
-        scores: dict[str, np.ndarray] = {}
-        for name in cfg.model.members:
-            adapter = make_adapter(name, cfg, lgbm_params)
-            adapter.fit(x_tr, y_tr, cols)
-            scores[name] = np.asarray(adapter.predict(x_te), dtype=np.float64)
-            del adapter  # free per-fold model memory (torch models especially)
+        h_scores: dict[int, np.ndarray] = {}
+        train_stds: dict[int, float] = {}
+        n_train: dict[int, int] = {}
+        extra: list[pl.Series] = []
+        for h in horizons:
+            ycol, endcol = horizon_cols(h, base)
+            train = df.filter(fold.train_expr(endcol) & pl.col(ycol).is_not_null())
+            if train.is_empty():
+                raise RuntimeError(f"fold {fold.fold_id} has empty train slice (H={h})")
+            x_tr = train.select(cols).to_numpy().astype(np.float32)
+            y_tr = train[ycol].to_numpy().astype(np.float32)
 
-        ensemble = mean_ensemble(scores)
-        extra = [pl.Series(f"score_{n}", s, dtype=pl.Float32) for n, s in scores.items()]
-        if len(scores) > 1:
-            extra.append(pl.Series("score_rankavg", rank_average(scores), dtype=pl.Float32))
+            scores: dict[str, np.ndarray] = {}
+            train_preds: list[np.ndarray] = []
+            for name in cfg.model.members:
+                adapter = make_adapter(name, cfg, lgbm_params)
+                adapter.fit(x_tr, y_tr, cols)
+                scores[name] = np.asarray(adapter.predict(x_te), dtype=np.float64)
+                if multi:  # train-window dispersion -> frozen blend scale
+                    train_preds.append(np.asarray(adapter.predict(x_tr), dtype=np.float64))
+                del adapter  # free per-fold model memory (torch models especially)
+
+            h_scores[h] = mean_ensemble(scores)
+            n_train[h] = train.height
+            if multi:
+                train_stds[h] = float(np.std(np.mean(np.column_stack(train_preds), axis=1)))
+            suffix = "" if h == base else f"_h{h}"
+            extra += [pl.Series(f"score_{n}{suffix}", s, dtype=pl.Float32) for n, s in scores.items()]
+            if h == base and len(scores) > 1:
+                extra.append(pl.Series("score_rankavg", rank_average(scores), dtype=pl.Float32))
+
+        scales = horizon_scales(train_stds, base) if multi else {base: 1.0}
+        ensemble = blend_horizons(h_scores, scales)
+        if multi:
+            for h in horizons:
+                extra.append(pl.Series(f"score_h{h}", h_scores[h], dtype=pl.Float32))
+                extra.append(
+                    pl.Series(f"blend_scale_h{h}", np.full(test.height, scales[h]), dtype=pl.Float32)
+                )
         parts.append(
             test.select("ts", "pair", pl.col("y").alias("y_true"))
             .with_columns(extra)
@@ -123,8 +163,14 @@ def run_cv_frames(
                 fold_id=pl.lit(fold.fold_id, dtype=pl.Int32),
             )
         )
-        print(f"fold {fold.fold_id}: train={train.height} test={test.height} "
-              f"[{fold.test_start:%Y-%m-%d} .. {fold.test_end:%Y-%m-%d}) members={list(scores)}")
+        train_desc = (
+            "/".join(f"H{h}={n_train[h]}" for h in horizons) if multi else str(n_train[base])
+        )
+        print(f"fold {fold.fold_id}: train={train_desc} test={test.height} "
+              f"[{fold.test_start:%Y-%m-%d} .. {fold.test_end:%Y-%m-%d}) members={list(cfg.model.members)}")
+        if multi:
+            print(f"fold {fold.fold_id}: blend scales "
+                  + ", ".join(f"H{h}={scales[h]:.4f}" for h in horizons))
     oos = pl.concat(parts, how="vertical")
     dupes = oos.height - oos.select("ts", "pair").unique().height
     if dupes:
@@ -147,6 +193,17 @@ def run_cv(cfg: Config) -> int:
     scores = oos["score"].to_numpy()
     y = oos["y_true"].to_numpy()
     pooled_ic = metrics.spearman_ic(scores, y)
+
+    # mean |score| drives the hysteresis trigger rate; the multi-horizon
+    # blend shifts it (imperfectly correlated horizons shrink |score|), so
+    # record it — blended and per horizon — for before/after inspection.
+    horizons = cfg.labels.all_horizons
+    mean_abs_score = float(np.mean(np.abs(scores)))
+    mean_abs_by_h = (
+        {str(h): float(np.mean(np.abs(oos[f"score_h{h}"].to_numpy()))) for h in horizons}
+        if len(horizons) > 1
+        else None
+    )
 
     # Pre-cost signal SR per period, recorded for the DSR trial history:
     # equal-weight portfolio of per-name positions sized by sign(score).
@@ -179,8 +236,18 @@ def run_cv(cfg: Config) -> int:
             "pooled_ic": None if np.isnan(pooled_ic) else pooled_ic,
             "member_ics": {k: (None if np.isnan(v) else v) for k, v in member_ics.items()},
             "sr_per_period": sr_pp,
+            "mean_abs_score": mean_abs_score,
+            "mean_abs_score_by_horizon": mean_abs_by_h,
         }
     )
     print(f"cv: {oos.height} OOS predictions across {len(folds)} folds -> {path}")
     print(f"cv: pooled Spearman IC = {pooled_ic:+.4f} (full stats: tml report)")
+    if mean_abs_by_h is None:
+        print(f"cv: mean |score| = {mean_abs_score:.4f}")
+    else:
+        base_abs = mean_abs_by_h[str(horizons[0])]
+        shift = (mean_abs_score / base_abs - 1.0) * 100 if base_abs else float("nan")
+        per_h = ", ".join(f"H{h}={mean_abs_by_h[str(h)]:.4f}" for h in horizons)
+        print(f"cv: mean |score| = {mean_abs_score:.4f} (blend; {per_h}; "
+              f"{shift:+.1f}% vs H{horizons[0]} alone)")
     return 0

@@ -55,9 +55,11 @@ def make_config(
     universe: dict | None = None,
     btc_residual: bool = False,
     features_overrides: dict | None = None,
+    overrides: dict | None = None,
 ) -> Config:
-    return Config.model_validate(
-        {
+    """`overrides` merges per-section keys over the defaults, e.g.
+    {"labels": {"horizons": [6, 12]}, "cv": {"purge_bars": 12}}."""
+    payload = {
             **({"universe": universe} if universe else {}),
             "data": {
                 "exchange": "binance",
@@ -111,8 +113,10 @@ def make_config(
                 "limit_ttl_bars": 2,
             },
             "root": str(root),
-        }
-    )
+    }
+    for section, vals in (overrides or {}).items():
+        payload[section] = {**payload.get(section, {}), **vals}
+    return Config.model_validate(payload)
 
 
 @pytest.fixture
