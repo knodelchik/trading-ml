@@ -22,3 +22,22 @@ def add_cs_ranks(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
         for c in cols
     ]
     return df.with_columns(exprs)
+
+
+def add_cs_zscores(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+    """Add per-timestamp z-scores across whichever pairs exist at each ts.
+
+    A ts with a single pair has no dispersion (std is null under ddof=1) —
+    the 0-fill makes its z exactly 0, never a null that would trip the
+    engine's no-nulls guard.
+    """
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"cs_z cols not present in features: {missing}")
+    exprs = [
+        ((pl.col(c) - pl.col(c).mean().over("ts")) / (pl.col(c).std().over("ts").fill_null(0.0) + 1e-12))
+        .cast(pl.Float32)
+        .alias(f"cs_z_{c}")
+        for c in cols
+    ]
+    return df.with_columns(exprs)

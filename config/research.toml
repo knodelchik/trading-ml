@@ -7,6 +7,7 @@ exchange = "binance"          # fallback if geo-blocked: "bybit"
 timeframe = "1h"
 since = "2020-01-01T00:00:00Z"
 funding = true                # USDT-perp funding rates as features
+btc_residual = false          # BTC-residual momentum + cs z-scores (S3; retrain on flip: model_hash)
 # 22-pair universe (M4): original 10 + 12 verified additions. Criteria:
 # Binance spot history <= 2021-06, funding history exists, Bybit linear
 # Trading, liquidity >= half of weakest incumbent. SHIB excluded: 1000x

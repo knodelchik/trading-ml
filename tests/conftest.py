@@ -49,7 +49,12 @@ def make_raw(pair: str, n: int = N_BARS, seed: int | None = None, start: datetim
 
 
 def make_config(
-    root, pairs: tuple[str, ...] = PAIRS, funding: bool = False, universe: dict | None = None
+    root,
+    pairs: tuple[str, ...] = PAIRS,
+    funding: bool = False,
+    universe: dict | None = None,
+    btc_residual: bool = False,
+    features_overrides: dict | None = None,
 ) -> Config:
     return Config.model_validate(
         {
@@ -60,6 +65,7 @@ def make_config(
                 "since": "2021-01-01T00:00:00Z",
                 "pairs": list(pairs),
                 "funding": funding,
+                "btc_residual": btc_residual,
             },
             "features": {
                 "ret_horizons": [1, 3, 6],
@@ -70,6 +76,7 @@ def make_config(
                 "donchian_window": 48,
                 "volume_z_window": 48,
                 "cs_rank_cols": ["mom_24", "mom_72", "vol_ewm_24"],
+                **(features_overrides or {}),
             },
             "labels": {"kind": "fixed_horizon_volscaled", "horizon_bars": 6, "vol_span": 24},
             "cv": {

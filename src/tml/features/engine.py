@@ -112,6 +112,17 @@ def build_features(cfg: Config) -> pl.DataFrame:
         from tml.features.taker import add_taker_features
 
         all_pairs = add_taker_features(all_pairs, cfg)
+    if cfg.data.btc_residual:
+        # BTC-residual features and their cross-sectional z-scores are computed
+        # on the FULL bar frame BEFORE membership filtering (research.dataset):
+        # per-ts stats over "pairs with a bar at ts" reproduce identically in
+        # live (which runs this same function), while stats over members-only
+        # would bake future membership knowledge into past feature values.
+        from tml.features.cross_sectional import add_cs_zscores
+        from tml.features.residual import CS_Z_COLS, add_residual_features
+
+        all_pairs = add_residual_features(all_pairs, cfg)
+        all_pairs = add_cs_zscores(all_pairs, list(CS_Z_COLS))
     return add_cs_ranks(all_pairs, list(cfg.features.cs_rank_cols))
 
 

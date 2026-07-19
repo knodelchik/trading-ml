@@ -30,6 +30,7 @@ class DataConfig(_Frozen):
     pairs: tuple[str, ...]
     funding: bool = False  # also ingest USDT-perp funding rates for pairs
     taker: bool = False  # also ingest taker buy/sell flow (order-flow features)
+    btc_residual: bool = False  # BTC-residual momentum + cross-sectional z-scores (no extra ingest)
 
     @field_validator("pairs")
     @classmethod
