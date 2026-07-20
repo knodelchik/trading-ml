@@ -51,6 +51,39 @@ def test_gate_action_universe():
     assert gate_action("BTCUSDT", -0.1, "long", trad, True, e, x, True) == "close"
 
 
+def test_recent_open_attempts(tmp_path):
+    import json
+    from datetime import UTC, datetime
+
+    from tests.conftest import make_config
+    from tml.live.state import journal_dir
+    from tml.live.tick import _recent_open_attempts
+
+    cfg = make_config(tmp_path)
+    d = journal_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    latest = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+    rows = [
+        # two failed open attempts in the TTL window -> counted
+        {"bar_ts": "2026-07-20T11:00:00+00:00", "symbol": "UNIUSDT", "reduce_only": False},
+        {"bar_ts": "2026-07-20T10:00:00+00:00", "symbol": "UNIUSDT", "reduce_only": False},
+        # outside the 2-bar window -> ignored
+        {"bar_ts": "2026-07-20T09:00:00+00:00", "symbol": "UNIUSDT", "reduce_only": False},
+        # current bar -> ignored (it's this tick's own attempt)
+        {"bar_ts": "2026-07-20T12:00:00+00:00", "symbol": "UNIUSDT", "reduce_only": False},
+        # closes and other symbols -> ignored
+        {"bar_ts": "2026-07-20T11:00:00+00:00", "symbol": "UNIUSDT", "reduce_only": True},
+        {"bar_ts": "2026-07-20T11:00:00+00:00", "symbol": "AAVEUSDT", "reduce_only": False},
+    ]
+    with (d / "orders.jsonl").open("w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+    assert _recent_open_attempts(cfg, "UNIUSDT", latest, ttl_bars=2) == 2
+    assert _recent_open_attempts(cfg, "AAVEUSDT", latest, ttl_bars=2) == 1
+    assert _recent_open_attempts(cfg, "PAXGUSDT", latest, ttl_bars=2) == 0
+
+
 def test_compute_snapshot(tmp_path):
     import json
 

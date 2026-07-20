@@ -19,6 +19,29 @@ from tml.config import Config
 from tml.live import state
 from tml.policy import Action, State, decide, position_state
 
+# passive offset beyond the touch for maker opens: demo market data lags the
+# demo matching engine by seconds, and a quote AT the touch crosses whenever
+# the market moved within that lag (PostOnly insta-cancel). 2bps absorbs the
+# typical lag move and still saves ~9bps vs a taker entry when filled.
+MAKER_OFFSET_BPS = 2.0
+
+
+def _recent_open_attempts(cfg: Config, symbol: str, latest_ts, ttl_bars: int) -> int:
+    """Count journaled OPEN attempts for `symbol` in the last `ttl_bars` bar
+    hours (excluding the current bar). Mirrors the backtest's limit-TTL: an
+    insta-cancelled PostOnly never rests on the book, so without this counter
+    the limit->TTL->market fallback would never trigger live."""
+    cutoff = (latest_ts - timedelta(hours=ttl_bars)).isoformat()
+    n = 0
+    for r in state.read_journal(cfg, "orders"):
+        if (
+            r.get("symbol") == symbol
+            and not r.get("reduce_only", True)
+            and cutoff <= r.get("bar_ts", "") < latest_ts.isoformat()
+        ):
+            n += 1
+    return n
+
 
 def gate_action(
     symbol: str,
@@ -222,13 +245,24 @@ def run_tick(cfg: Config) -> int:
             # CLOSES always go to market: an exit we've decided on must
             # complete reliably (a passive close-limit that never fills leaves
             # us stuck in the position). Only OPENS use maker (patient, saves
-            # fees), priced at the Bybit touch so PostOnly never crosses.
-            if cfg.execution.mode == "maker" and not reduce_only:
+            # fees). Demo market data lags the demo matching engine by seconds,
+            # so a quote AT the touch kept crossing in moving markets
+            # (EC_PostOnlyWillTakeLiquidity 6/6 after deploy) — quote a 2bps
+            # passive offset beyond the touch to absorb the lag. And mirror the
+            # backtest's TTL semantics: an insta-cancelled PostOnly never rests,
+            # so after limit_ttl_bars consecutive failed open attempts the next
+            # one goes to market (the backtest's limit->TTL->market fallback).
+            failed_attempts = _recent_open_attempts(cfg, symbol, latest_ts, cfg.execution.limit_ttl_bars)
+            use_maker = cfg.execution.mode == "maker" and not reduce_only
+            if use_maker and failed_attempts >= cfg.execution.limit_ttl_bars:
+                use_maker = False  # TTL exhausted across ticks -> market entry
+            if use_maker:
                 from tml.live.executor import quantize_price
 
                 f = filters[symbol]
                 bid, ask = ex.best_bid_ask(symbol)
-                raw_px = bid if side == "Buy" else ask
+                off = 1 + MAKER_OFFSET_BPS / 10_000 * (-1 if side == "Buy" else 1)
+                raw_px = (bid if side == "Buy" else ask) * off
                 limit_px = quantize_price(raw_px, side, f)
                 order_id = ex.limit_post_only(symbol, side, qty, limit_px, link_id, reduce_only)
                 verb = "🟢 виставив лімітку ЛОНГ" if action == "open_long" else "🔴 виставив лімітку ШОРТ"
