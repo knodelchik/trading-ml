@@ -64,6 +64,43 @@ def journal_executions(cfg: Config, execs: list[dict]) -> int:
     return len(new)
 
 
+def journal_closed_pnl(cfg: Config, trades: list[dict]) -> int:
+    """Append closed round trips not already recorded (dedupe by order_id).
+    Bybit demo only serves ~7 days of closed-PnL, so this local accumulation
+    is the durable source for the bot's LIFETIME realized P&L (immune to the
+    server-side window as long as we tick at least weekly). Returns new count.
+    """
+    d = journal_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "closed_pnl.jsonl"
+    seen = {json.loads(line)["order_id"] for line in path.open()} if path.exists() else set()
+    new = [t for t in trades if t["order_id"] not in seen]
+    if new:
+        with open(path, "a") as f:
+            for t in sorted(new, key=lambda r: r["close_ms"]):
+                f.write(json.dumps(t, sort_keys=True) + "\n")
+    return len(new)
+
+
+def realized_total(cfg: Config) -> float:
+    """Lifetime realized P&L (USDT) from the durable closed-PnL journal."""
+    return sum(t["closed_pnl"] for t in read_journal(cfg, "closed_pnl"))
+
+
+def equity_baseline(cfg: Config) -> float | None:
+    """The first logged account equity — the honest baseline for the bot's
+    all-in result (price P&L + funding + fees), since the account is all USDT.
+    None if nothing logged yet."""
+    path = journal_dir(cfg) / "equity.jsonl"
+    if not path.exists():
+        return None
+    with path.open() as f:
+        for line in f:
+            if line.strip():
+                return float(json.loads(line)["total_equity"])
+    return None
+
+
 def last_fill_ms(cfg: Config) -> int | None:
     path = journal_dir(cfg) / "fills.jsonl"
     if not path.exists():

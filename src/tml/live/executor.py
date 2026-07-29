@@ -160,6 +160,26 @@ class BybitDemoExecutor:
                 break
         return out
 
+    def open_unrealized(self) -> float:
+        """Total unrealized P&L (USDT) across open perp positions. Immune to
+        the demo gift-coin spot balance that dominates raw equity — this plus
+        the realized journal is the bot's true trading P&L."""
+        total = 0.0
+        cursor = ""
+        while True:
+            kwargs = {"category": "linear", "settleCoin": "USDT", "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = self.session.get_positions(**kwargs)["result"]
+            page = result["list"]
+            for p in page:
+                if float(p["size"] or 0):
+                    total += float(p.get("unrealisedPnl") or 0)
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor or len(page) < 200:
+                break
+        return total
+
     def equity_usdt(self) -> dict[str, float]:
         resp = self.session.get_wallet_balance(accountType="UNIFIED")
         acct = resp["result"]["list"][0]

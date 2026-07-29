@@ -181,6 +181,7 @@ def run_tick(cfg: Config) -> int:
     )
     submitted: list[tuple[str, str]] = []  # (symbol, order_id)
     tg_lines: list[str] = []
+    close_lines: list[tuple[str, int]] = []  # (symbol, tg_lines index) to annotate with PnL
     for row in scores.iter_rows(named=True):
         symbol, px, score = row["pair"], float(row["close"]), float(row["score"])
         if symbol in suppressed:
@@ -277,6 +278,8 @@ def run_tick(cfg: Config) -> int:
             tg_lines.append(
                 f"{verb} <b>{symbol}</b>: {qty} @ ~{px:g} (~{float(qty) * px:,.0f} USDT, скор {score:+.2f})"
             )
+            if action == "close":  # annotate with realized PnL once it settles
+                close_lines.append((symbol, len(tg_lines) - 1))
             state.log_order(
                 cfg,
                 {
@@ -308,9 +311,33 @@ def run_tick(cfg: Config) -> int:
     except Exception as e:  # noqa: BLE001
         state.log_error(cfg, {"stage": "fills", "error": repr(e)})
 
-    # 6) equity snapshot
+    # 5b) journal closed round trips (durable lifetime realized P&L, since
+    # Bybit only serves ~7d) and annotate this tick's close lines with PnL
+    try:
+        closed = ex.recent_closed_pnl(days=7)
+        state.journal_closed_pnl(cfg, closed)
+        latest_pnl: dict[str, float] = {}
+        for t in sorted(closed, key=lambda r: r["close_ms"]):
+            latest_pnl[t["symbol"]] = t["closed_pnl"]  # most recent per symbol
+        for symbol, idx in close_lines:
+            if symbol in latest_pnl:
+                tg_lines[idx] += f"  → PnL <b>{latest_pnl[symbol]:+.2f}</b> USDT"
+    except Exception as e:  # noqa: BLE001
+        state.log_error(cfg, {"stage": "closed_pnl", "error": repr(e)})
+
+    # 6) equity snapshot + the bot's all-in result since inception. Account is
+    # all USDT, so (equity now - first logged equity) IS the bot's net P&L
+    # (price + funding + fees) — the honest figure, unlike a raw balance or a
+    # closedPnl sum that omits funding. baseline is captured BEFORE this tick's
+    # log_equity so a same-tick first run still reads a prior baseline.
+    baseline = state.equity_baseline(cfg)
     eq = ex.equity_usdt()
     state.log_equity(cfg, {"bar_ts": latest_ts.isoformat(), **eq, "n_orders": len(submitted)})
+    if baseline is None:
+        baseline = eq["total_equity"]
+    bot_pnl = eq["total_equity"] - baseline
+    pct = (bot_pnl / baseline * 100) if baseline else 0.0
+    bot_line = f"📈 результат бота від старту: <b>{bot_pnl:+,.0f} USDT</b> ({pct:+.2f}%)"
 
     # 6a) push dashboard snapshot to lifeos (best-effort, never breaks a tick)
     try:
@@ -320,12 +347,13 @@ def run_tick(cfg: Config) -> int:
     except Exception as e:  # noqa: BLE001
         state.log_error(cfg, {"stage": "push", "error": repr(e)})
 
-    # 7) telegram: every trade immediately; daily digest at 06:00 UTC (09:00 Київ)
+    # 7) telegram: every trade immediately; daily digest at 10:00 Kyiv
     if tg_lines:
         notify.send(
             "🤖 <b>tml</b> @ " + latest_ts.strftime("%H:%M UTC") + "\n"
             + "\n".join(tg_lines)
-            + f"\n💰 еквіті: {eq['total_equity']:,.0f} USDT"
+            + f"\n{bot_line}"
+            + f"\n💰 рахунок: {eq['total_equity']:,.0f} USDT"
         )
     else:
         from zoneinfo import ZoneInfo
@@ -335,8 +363,9 @@ def run_tick(cfg: Config) -> int:
             n_open = len(ex.positions())
             notify.send(
                 f"🌅 <b>tml щоденний звіт</b>\n"
-                f"💰 еквіті: {eq['total_equity']:,.0f} USDT\n"
-                f"📊 відкритих позицій: {n_open} з {len(cfg.data.pairs)} пар"
+                f"{bot_line}\n"
+                f"📊 відкритих позицій: {n_open} з {len(cfg.data.pairs)} пар\n"
+                f"💰 рахунок: {eq['total_equity']:,.0f} USDT"
             )
 
     print(

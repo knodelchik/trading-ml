@@ -51,6 +51,22 @@ def test_gate_action_universe():
     assert gate_action("BTCUSDT", -0.1, "long", trad, True, e, x, True) == "close"
 
 
+def test_journal_closed_pnl(tmp_path):
+    from tests.conftest import make_config
+    from tml.live import state
+
+    cfg = make_config(tmp_path)
+    t1 = {"order_id": "o1", "symbol": "BTCUSDT", "closed_pnl": -202.25, "close_ms": 1000, "side": "long"}
+    t2 = {"order_id": "o2", "symbol": "WLDUSDT", "closed_pnl": 161.22, "close_ms": 2000, "side": "short"}
+    # first write: both new
+    assert state.journal_closed_pnl(cfg, [t1, t2]) == 2
+    # re-submit the same + a new one: only the new counts (dedupe by order_id)
+    t3 = {"order_id": "o3", "symbol": "TAOUSDT", "closed_pnl": 150.41, "close_ms": 3000, "side": "long"}
+    assert state.journal_closed_pnl(cfg, [t1, t2, t3]) == 1
+    # lifetime realized survives the dedupe and sums correctly
+    assert round(state.realized_total(cfg), 2) == round(-202.25 + 161.22 + 150.41, 2)
+
+
 def test_recent_open_attempts(tmp_path):
     import json
     from datetime import UTC, datetime
